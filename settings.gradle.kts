@@ -6,4 +6,3 @@
  */
 
 rootProject.name = "gradle-setenv"
-include("plugin")

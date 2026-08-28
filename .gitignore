@@ -8,4 +8,10 @@ build
 .kotlin
 
 # Ignore .env files
-.env
+.env*
+
+# Ignore IDE-specific files
+.idea/
+
+# Ignore local AI assistant config
+DEVOXXGENIE.md
