@@ -130,8 +130,12 @@ class SetEnvPluginFunctionalTest {
     @Nested
     inner class CreateSecrets {
 
+        // Note: createSecrets with actual secrets requires AWS CLI + credentials,
+        // so we can only test the no-op path here. The fetch/parse/merge logic is
+        // covered by unit tests (CreateSecretsTaskTest) with a mocked commandExecutor.
+
         @Test
-        fun `createSecrets merges cached secret into env file`() {
+        fun `createSecrets is a clean no-op when no secrets are configured`() {
             settingsFile.writeText("")
             buildFile.writeText(
                 """
@@ -143,66 +147,12 @@ class SetEnvPluginFunctionalTest {
                     target = 'dev'
                     region = 'use1'
                     environmentVariables = [APP: 'my-app']
-
-                    secrets {
-                        db {
-                            secretId = 'myapp/dev/db'
-                        }
-                    }
                 }
                 """.trimIndent(),
             )
 
-            // Pre-populate the cache file (.env-dev) that createSecrets will merge from
-            val cacheFile = projectDir.resolve(".env-dev")
-            cacheFile.writeText("DB_HOST=db.example.com\nDB_PASS=s3cret\n")
-
-            runner("createSecrets").build()
-
-            val envFile = projectDir.resolve(".env")
-            assertTrue(envFile.exists(), ".env should be created")
-            val content = envFile.readText()
-            assertTrue(content.contains("DB_HOST=db.example.com"))
-            assertTrue(content.contains("DB_PASS=s3cret"))
-        }
-
-        @Test
-        fun `createSecrets preserves manual entries in env file`() {
-            settingsFile.writeText("")
-            buildFile.writeText(
-                """
-                plugins {
-                    id('io.github.adamarmistead.setenv')
-                }
-
-                env {
-                    target = 'dev'
-                    region = 'use1'
-                    environmentVariables = [APP: 'my-app']
-
-                    secrets {
-                        db {
-                            secretId = 'myapp/dev/db'
-                        }
-                    }
-                }
-                """.trimIndent(),
-            )
-
-            // Pre-populate cache
-            val cacheFile = projectDir.resolve(".env-dev")
-            cacheFile.writeText("DB_HOST=new-host\n")
-
-            // Pre-create .env with a manual entry and a comment
-            val envFile = projectDir.resolve(".env")
-            envFile.writeText("# My manual config\nMANUAL_KEY=keep-me\nAPP=my-app\n")
-
-            runner("createSecrets").build()
-
-            val content = envFile.readText()
-            assertTrue(content.contains("# My manual config"), "Comment should be preserved")
-            assertTrue(content.contains("MANUAL_KEY=keep-me"), "Manual entry should be preserved")
-            assertTrue(content.contains("DB_HOST=new-host"), "Secret should be merged in")
+            val result = runner("createSecrets").build()
+            assertTrue(result.output.contains("No secrets blocks configured"))
         }
     }
 
@@ -225,32 +175,21 @@ class SetEnvPluginFunctionalTest {
                         APP: 'my-app',
                         REGION: '${'$'}{region}',
                     ]
-
-                    secrets {
-                        db {
-                            secretId = 'myapp/dev/db'
-                        }
-                    }
                 }
                 """.trimIndent(),
             )
 
-            // Pre-populate cache so createSecrets doesn't need AWS
-            val cacheFile = projectDir.resolve(".env-dev")
-            cacheFile.writeText("DB_HOST=db.example.com\n")
-
             val result = runner("setEnv").build()
 
-            // Both tasks should have run
+            // Both tasks should have run (createSecrets is a no-op with no secrets)
             assertTrue(result.output.contains("createEnv") || result.output.contains("targeting"))
-            assertTrue(result.output.contains("createSecrets") || result.output.contains("Merged"))
+            assertTrue(result.output.contains("No secrets blocks configured"))
 
-            // .env should have both the env var and the secret
+            // .env should have the env vars
             val envFile = projectDir.resolve(".env")
             val content = envFile.readText()
             assertTrue(content.contains("APP=my-app"))
             assertTrue(content.contains("REGION=us-east-1"))
-            assertTrue(content.contains("DB_HOST=db.example.com"))
         }
 
         @Test
@@ -270,7 +209,7 @@ class SetEnvPluginFunctionalTest {
                 """.trimIndent(),
             )
 
-            val result = runner("setEnv").build()
+            runner("setEnv").build()
 
             val envFile = projectDir.resolve(".env")
             assertTrue(envFile.exists())
@@ -332,7 +271,7 @@ class SetEnvPluginFunctionalTest {
             )
 
             // Simulate CI by setting the env var for the Gradle process
-            val result = GradleRunner.create()
+            GradleRunner.create()
                 .forwardOutput()
                 .withPluginClasspath()
                 .withArguments("setEnv")

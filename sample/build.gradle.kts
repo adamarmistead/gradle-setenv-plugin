@@ -16,22 +16,20 @@ env {
     )
 
     // ── Remote secrets (requires AWS CLI + an authenticated profile) ──────────
-    // Uncomment and point at real secrets to exercise the full flow:
-    //
-    // secrets {
-    //     create("dbCredentials") {
-    //         secretId = "myapp/\${target}/db"
-    //         renameKeys = mapOf(
-    //             "username" to "DB_USER",
-    //             "password" to "DB_PASSWORD",
-    //         )
-    //     }
-    //     create("apiKey") {
-    //         secretId = "myapp/\${target}/api-key"
-    //         plaintext = true
-    //         plaintextKey = "THIRD_PARTY_API_KEY"
-    //     }
-    // }
+    secrets {
+        create("dbCredentials") {
+            secretId = "myapp/\${target}/db"
+            renameKeys = mapOf(
+                "username" to "DB_USER",
+                "password" to "DB_PASSWORD",
+            )
+        }
+        create("apiKey") {
+            secretId = "myapp/\${target}/api-key"
+            plaintext = true
+            plaintextKey = "THIRD_PARTY_API_KEY"
+        }
+    }
 }
 
 // Convenience task: print the generated .env so you can see what setEnv produced.

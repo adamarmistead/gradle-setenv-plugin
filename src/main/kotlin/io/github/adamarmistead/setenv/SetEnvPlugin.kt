@@ -24,6 +24,7 @@ import org.gradle.api.tasks.TaskProvider
  * env { target = "dev" }
  * ```
  */
+@Suppress("unused") // Loaded by Gradle via reflection from the plugin descriptor
 class SetEnvPlugin : Plugin<Project> {
 
     /**
@@ -64,6 +65,13 @@ class SetEnvPlugin : Plugin<Project> {
             task.target.set(setEnv.flatMap { it.target })
             task.region.set(setEnv.flatMap { it.region })
             task.refresh.set(setEnv.flatMap { it.refresh })
+            task.cacheFile.convention(
+                setEnv.flatMap { t ->
+                    t.target.map { env ->
+                        project.rootProject.layout.projectDirectory.file(Defaults.cacheFileName(env))
+                    }
+                },
+            )
             task.mustRunAfter(createEnv)
         }
 
@@ -76,13 +84,6 @@ class SetEnvPlugin : Plugin<Project> {
             secret.secretKeys.convention(emptyList())
             secret.plaintext.convention(Defaults.IS_PLAINTEXT)
             secret.renameKeys.convention(emptyMap())
-            secret.secretsFile.convention(
-                setEnv.flatMap { task ->
-                    task.target.map { env ->
-                        project.rootProject.layout.projectDirectory.file(Defaults.cacheFileName(env))
-                    }
-                },
-            )
         }
 
         project.afterEvaluate {
@@ -93,9 +94,11 @@ class SetEnvPlugin : Plugin<Project> {
             // Validate that all file paths are within the project directory
             val projectDir = project.rootProject.projectDir.absoluteFile.normalize()
             ProjectUtils.validatePathWithinProject(envExtension.envFile.get().asFile, projectDir, "envFile")
-            secretsContainer.forEach { secret ->
-                ProjectUtils.validatePathWithinProject(secret.secretsFile.get().asFile, projectDir, "secretsFile for '${secret.name}'")
-            }
+            ProjectUtils.validatePathWithinProject(
+                createSecrets.get().cacheFile.get().asFile,
+                projectDir,
+                "cacheFile",
+            )
 
             if (System.getenv("CI") != null) {
                 createEnv.configure { it.enabled = false }

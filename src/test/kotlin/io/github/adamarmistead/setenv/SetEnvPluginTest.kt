@@ -75,7 +75,6 @@ class SetEnvPluginTest {
             val project = ProjectBuilder.builder().build()
             project.plugins.apply("io.github.adamarmistead.setenv")
 
-            val extension = project.extensions.getByType(EnvExtension::class.java)
             // Default is already within project dir — should not throw
             val projectDir = project.rootProject.projectDir
             ProjectUtils.validatePathWithinProject(
@@ -132,7 +131,7 @@ class SetEnvPluginTest {
         }
 
         @Test
-        fun `secretsFile outside project directory is rejected`() {
+        fun `cacheFile outside project directory is rejected`() {
             val project = ProjectBuilder.builder().build()
             project.plugins.apply("io.github.adamarmistead.setenv")
 
@@ -141,10 +140,10 @@ class SetEnvPluginTest {
                 ProjectUtils.validatePathWithinProject(
                     java.io.File("/var/secrets/.env-dev"),
                     projectDir,
-                    "secretsFile for 'db'",
+                    "cacheFile",
                 )
             }
-            assertTrue(ex.message!!.contains("secretsFile for 'db'"))
+            assertTrue(ex.message!!.contains("cacheFile"))
             assertTrue(ex.message!!.contains("outside the project directory"))
         }
     }

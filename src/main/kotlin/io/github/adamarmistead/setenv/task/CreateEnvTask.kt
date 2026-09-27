@@ -16,10 +16,11 @@ import org.gradle.api.tasks.TaskAction
 import javax.inject.Inject
 
 /**
- * Writes the `.env` file with static and interpolated environment variables.
+ * Merges static and interpolated environment variables into the `.env` file.
  *
  * Reads the `environmentVariables` map from the DSL, performs placeholder substitution
- * (e.g. `${target}`, `${region}`), and writes the result to the configured output file.
+ * (e.g. `${target}`, `${region}`), and merges the result into the configured output file.
+ * Existing content (comments, manually added keys, secrets from `createSecrets`) is preserved.
  *
  * If no variables are configured, the task is a no-op (no file is created).
  */
@@ -54,7 +55,10 @@ abstract class CreateEnvTask @Inject constructor(
 
     /**
      * Task action: builds the property map, substitutes placeholders in all configured
-     * variables, and writes the result to [envFile].
+     * variables, and merges the result into [envFile].
+     *
+     * Uses merge semantics so that re-running this task (e.g. after `createSecrets`
+     * has added keys) does not destroy existing content.
      *
      * No-op when [environmentVariables] is empty.
      */
@@ -70,9 +74,9 @@ abstract class CreateEnvTask @Inject constructor(
         val variables = environmentVariables.get()
         if (variables.isNotEmpty()) {
             val substituted = variables.mapValues { (_, value) -> substitutor.replace(value) }
-            // Use EnvFileIO.write() so the file gets 0600 permissions and a .gitignore entry,
-            // even when createSecrets is skipped (e.g. no secrets configured).
-            EnvFileIO.write(envFile.get().asFile, substituted)
+            // Use mergeProperties so re-running this task doesn't destroy secrets
+            // that createSecrets has already merged into the same file.
+            EnvFileIO.mergeProperties(envFile.get().asFile, substituted)
         }
     }
 }

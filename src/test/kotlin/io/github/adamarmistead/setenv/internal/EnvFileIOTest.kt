@@ -121,6 +121,75 @@ class EnvFileIOTest {
     }
 
     @Nested
+    inner class MergeProperties {
+
+        @Test
+        fun `updates existing keys in place preserving other content`() {
+            val target = File(tempDir, "merge-props.env")
+            target.writeText(
+                """
+                # App config
+                APP_NAME=my-app
+                DB_PASSWORD=secret123
+                MANUAL_KEY=keep-me
+                """.trimIndent(),
+            )
+
+            EnvFileIO.mergeProperties(target, mapOf("APP_NAME" to "renamed-app"))
+
+            val lines = target.readLines()
+            assertTrue(lines.contains("# App config"))
+            assertTrue(lines.contains("APP_NAME=renamed-app"))
+            assertTrue(lines.contains("DB_PASSWORD=secret123"))
+            assertTrue(lines.contains("MANUAL_KEY=keep-me"))
+        }
+
+        @Test
+        fun `appends new keys not already in the target`() {
+            val target = File(tempDir, "merge-props-new.env")
+            EnvFileIO.write(target, mapOf("EXISTING" to "yes"))
+
+            EnvFileIO.mergeProperties(target, mapOf("NEW_KEY" to "added", "EXISTING" to "updated"))
+
+            val properties = EnvFileIO.read(target)
+            assertEquals("updated", properties["EXISTING"])
+            assertEquals("added", properties["NEW_KEY"])
+        }
+
+        @Test
+        fun `creates target when it does not exist`() {
+            val target = File(tempDir, "merge-props-new-file.env")
+            assertFalse(target.exists())
+
+            EnvFileIO.mergeProperties(target, mapOf("KEY" to "value"))
+
+            assertTrue(target.exists())
+            assertEquals(mapOf("KEY" to "value"), EnvFileIO.read(target))
+        }
+
+        @Test
+        fun `is a no-op when properties map is empty`() {
+            val target = File(tempDir, "merge-props-empty.env")
+            target.writeText("EXISTING=yes\n")
+
+            EnvFileIO.mergeProperties(target, emptyMap())
+
+            assertEquals(listOf("EXISTING=yes"), target.readLines())
+        }
+
+        @Test
+        fun `is idempotent when values are unchanged`() {
+            val target = File(tempDir, "merge-props-idempotent.env")
+            target.writeText("A=1\nB=2\nC=3\n")
+
+            EnvFileIO.mergeProperties(target, mapOf("A" to "1", "B" to "2"))
+
+            // Content should be identical — no reordering, no additions
+            assertEquals(listOf("A=1", "B=2", "C=3"), target.readLines())
+        }
+    }
+
+    @Nested
     inner class EnsureGitIgnored {
 
         @Test

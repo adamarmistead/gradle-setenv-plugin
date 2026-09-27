@@ -61,12 +61,25 @@ internal object EnvFileIO {
     fun mergeInto(target: File, vararg sources: File) {
         val incoming = linkedMapOf<String, String>()
         sources.forEach { source -> incoming.putAll(read(source)) }
+        mergeProperties(target, incoming)
+    }
 
-        if (incoming.isEmpty()) return
+    /**
+     * Merges an in-memory `properties` map into `target`, preserving existing content.
+     *
+     * Semantics are identical to [mergeInto] but accept a map directly instead of
+     * reading from source files. Used by CreateEnvTask to update static variables
+     * without destroying secrets that CreateSecretsTask has already merged in.
+     *
+     * If `target` does not yet exist, it is created with the given properties.
+     * If `properties` is empty, this is a no-op.
+     */
+    fun mergeProperties(target: File, properties: Map<String, String>) {
+        if (properties.isEmpty()) return
 
         // Target doesn't exist yet — just write the incoming values directly.
         if (!target.exists()) {
-            write(target, incoming)
+            write(target, properties)
             return
         }
 
@@ -82,9 +95,9 @@ internal object EnvFileIO {
                 line.isBlank() || line.startsWith("#") -> line
                 else -> {
                     val key = line.split("=", limit = 2)[0].trim()
-                    if (incoming.containsKey(key)) {
+                    if (properties.containsKey(key)) {
                         handled.add(key)
-                        "$key=${incoming.getValue(key)}"
+                        "$key=${properties.getValue(key)}"
                     } else {
                         line
                     }
@@ -92,13 +105,13 @@ internal object EnvFileIO {
             }
         }.toMutableList()
 
-        // Append any keys from sources that were not already in the file.
-        val newKeys = incoming.keys - handled
+        // Append any keys that were not already in the file.
+        val newKeys = properties.keys - handled
         if (newKeys.isNotEmpty()) {
             if (updatedLines.lastOrNull()?.isNotBlank() == true) {
                 updatedLines.add("")  // blank separator before appended block
             }
-            newKeys.forEach { key -> updatedLines.add("$key=${incoming.getValue(key)}") }
+            newKeys.forEach { key -> updatedLines.add("$key=${properties.getValue(key)}") }
         }
 
         target.bufferedWriter().use { writer ->

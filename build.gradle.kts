@@ -7,7 +7,15 @@ plugins {
 
     // Code coverage
     jacoco
+
+    // Version derived from git tags (e.g. v0.1.0 → 0.1.0)
+    id("com.palantir.git-version") version "3.4.0"
 }
+
+// Wire the git-derived version into the project
+// The palantir git-version plugin stores a Closure in extra; invoke it to get the version string.
+@Suppress("UNCHECKED_CAST")
+version = (extra["gitVersion"] as groovy.lang.Closure<String>)()
 
 repositories {
     // Use Maven Central for resolving dependencies.
@@ -23,9 +31,11 @@ dependencies {
 
 gradlePlugin {
     // Define the plugin
-    val setenv = plugins.create("setenv") {
+    plugins.create("setenv") {
         id = "io.github.adamarmistead.setenv"
         implementationClass = "io.github.adamarmistead.setenv.SetEnvPlugin"
+        description = "Generate .env files from Gradle properties, OS environment variables, and cloud secrets managers (AWS, GCP, Azure)"
+        tags = listOf("environment", "env", "secrets", "cloud", "configuration")
     }
 }
 

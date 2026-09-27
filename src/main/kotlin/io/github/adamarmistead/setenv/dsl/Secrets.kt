@@ -1,25 +1,16 @@
 package io.github.adamarmistead.setenv.dsl
 
-import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.MapProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.Optional
-import org.gradle.api.tasks.OutputFile
 import javax.inject.Inject
 
 abstract class Secrets @Inject constructor(
     @get:Internal val name: String,
 ) {
-
-    /**
-     * Override the target environment for this secret block (e.g. fetch from a different environment).
-     */
-    @get:Input
-    @get:Optional
-    abstract val environment: Property<String>
 
     /**
      * AWS CLI profile to use when fetching this secret. Defaults to "default".
@@ -28,7 +19,9 @@ abstract class Secrets @Inject constructor(
     abstract val profile: Property<String>
 
     /**
-     * Override the region for this secret block.
+     * Override the region for this specific secret (e.g. the secret lives in a different
+     * AWS region than the task-level default). Same credentials work across regions —
+     * this just changes the `--region` flag on the CLI call, no re-login needed.
      */
     @get:Input
     @get:Optional
@@ -71,9 +64,4 @@ abstract class Secrets @Inject constructor(
     @get:Optional
     abstract val renameKeys: MapProperty<String, String>
 
-    /**
-     * Per-environment cache file (e.g. .env-dev). Managed automatically by the plugin.
-     */
-    @get:OutputFile
-    abstract val secretsFile: RegularFileProperty
 }

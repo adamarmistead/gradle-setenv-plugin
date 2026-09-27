@@ -34,7 +34,6 @@ class CreateSecretsTaskTest {
         plaintextKey: String = "RAW_VALUE",
         renameKeys: Map<String, String>? = null,
         secretKeys: List<String>? = null,
-        cacheFile: File = File(projectDir, ".env-dev-$name"),
     ): Secrets {
         val extension = project.extensions.getByType(EnvExtension::class.java)
         val secret = extension.secrets.create(name)
@@ -43,7 +42,6 @@ class CreateSecretsTaskTest {
         if (plaintext) secret.plaintextKey.set(plaintextKey)
         renameKeys?.let { secret.renameKeys.set(it) }
         secretKeys?.let { secret.secretKeys.set(it) }
-        secret.secretsFile.set(cacheFile)
 
         // Simulate afterEvaluate: copy from extension container to task container
         val createSecrets = project.tasks.named("createSecrets", CreateSecretsTask::class.java).get()
@@ -57,12 +55,14 @@ class CreateSecretsTaskTest {
         region: String = "use1",
         refresh: Boolean = true,
         envFile: File = File(projectDir, ".env"),
+        cacheFile: File = File(projectDir, ".env-dev"),
     ): CreateSecretsTask {
         val task = project.tasks.named("createSecrets", CreateSecretsTask::class.java).get()
         task.target.set(env)
         task.region.set(region)
         task.refresh.set(refresh)
         task.envFile.set(envFile)
+        task.cacheFile.set(cacheFile)
         return task
     }
 
@@ -101,6 +101,7 @@ class CreateSecretsTaskTest {
             createSecrets.region.set("use1")
             createSecrets.refresh.set(true)
             createSecrets.envFile.set(File(projectDir, ".env"))
+            createSecrets.cacheFile.set(File(projectDir, ".env-dev"))
 
             // Neither should throw
             createEnv.createEnvFile()
@@ -116,12 +117,10 @@ class CreateSecretsTaskTest {
         @Test
         fun `fetches and parses JSON secret with key remapping`() {
             val project = newProject()
-            val cacheFile = File(projectDir, ".env-dev-db")
             wireSecret(
                 project, "db",
                 renameKeys = mapOf("username" to "DB_USER", "password" to "DB_PASS"),
                 secretKeys = listOf("DB_USER", "DB_PASS"),
-                cacheFile = cacheFile,
             )
             val task = setupTask(project)
 
@@ -147,8 +146,7 @@ class CreateSecretsTaskTest {
         @Test
         fun `fetches JSON secret without key filter returns all keys`() {
             val project = newProject()
-            val cacheFile = File(projectDir, ".env-dev-all")
-            wireSecret(project, "all", cacheFile = cacheFile)
+            wireSecret(project, "all")
             val task = setupTask(project)
 
             task.commandExecutor = { cmd, _, _ ->
@@ -164,7 +162,6 @@ class CreateSecretsTaskTest {
             assertEquals("5432", env["port"])
             assertEquals("root", env["user"])
         }
-
     }
 
     // ─── Plaintext (Raw String) Secrets ───────────────────────────────────────
@@ -175,12 +172,10 @@ class CreateSecretsTaskTest {
         @Test
         fun `fetches plaintext secret and stores under configured key`() {
             val project = newProject()
-            val cacheFile = File(projectDir, ".env-dev-token")
             wireSecret(
                 project, "token",
                 plaintext = true,
                 plaintextKey = "API_TOKEN",
-                cacheFile = cacheFile,
             )
             val task = setupTask(project)
 
@@ -199,12 +194,10 @@ class CreateSecretsTaskTest {
         @Test
         fun `plaintext secret with custom key name`() {
             val project = newProject()
-            val cacheFile = File(projectDir, ".env-dev-raw")
             wireSecret(
                 project, "raw",
                 plaintext = true,
                 plaintextKey = "MY_RAW_SECRET",
-                cacheFile = cacheFile,
             )
             val task = setupTask(project)
 
@@ -229,19 +222,14 @@ class CreateSecretsTaskTest {
         @Test
         fun `merges multiple secret blocks into single env file`() {
             val project = newProject()
-            val cacheDb = File(projectDir, ".env-dev-db")
-            val cacheApi = File(projectDir, ".env-dev-api")
-
             wireSecret(
                 project, "db",
                 renameKeys = mapOf("username" to "DB_USER"),
                 secretKeys = listOf("DB_USER"),
-                cacheFile = cacheDb,
             )
             wireSecret(
                 project, "api",
                 secretId = $$"myapp/${target}/api-keys",
-                cacheFile = cacheApi,
             )
             val task = setupTask(project)
 
@@ -262,13 +250,10 @@ class CreateSecretsTaskTest {
         }
 
         @Test
-        fun `each secret block gets its own cache file`() {
+        fun `all secrets land in a single cache file`() {
             val project = newProject()
-            val cacheA = File(projectDir, ".env-dev-a")
-            val cacheB = File(projectDir, ".env-dev-b")
-
-            wireSecret(project, "a", cacheFile = cacheA)
-            wireSecret(project, "b", cacheFile = cacheB)
+            wireSecret(project, "a")
+            wireSecret(project, "b")
             val task = setupTask(project)
 
             task.commandExecutor = { cmd, _, _ ->
@@ -281,139 +266,76 @@ class CreateSecretsTaskTest {
 
             task.createSecretsFile()
 
-            assertTrue(cacheA.exists(), "cache file for secret 'a' should exist")
-            assertTrue(cacheB.exists(), "cache file for secret 'b' should exist")
+            val cacheFile = File(projectDir, ".env-dev")
+            assertTrue(cacheFile.exists(), "Single cache file should exist")
 
-            val cacheAProps = EnvFileIO.read(cacheA)
-            val cacheBProps = EnvFileIO.read(cacheB)
-            assertEquals("val_a", cacheAProps["key_a"])
-            assertEquals("val_b", cacheBProps["key_b"])
-        }
-
-        @Test
-        fun `secret with per-secret env override uses different environment`() {
-            val project = newProject()
-            val cacheFile = File(projectDir, ".env-prd-special")
-            val secret = wireSecret(project, "special", cacheFile = cacheFile)
-            secret.environment.set("prd")
-
-            val task = setupTask(project, env = "dev")
-
-            val executed = mutableListOf<String>()
-            task.commandExecutor = { cmd, _, _ ->
-                executed.add(cmd)
-                if (cmd.contains("get-secret-value")) {
-                    """{"token": "prd-token"}"""
-                } else ""
-            }
-
-            task.createSecretsFile()
-
-            // Should have logged in via the standard AWS CLI SSO flow with the profile
-            assertTrue(executed.any { it.contains("aws sso login --profile default") })
-            // Secret ID should resolve to prd
-            assertTrue(executed.any { it.contains("myapp/prd/special") })
+            val cacheProps = EnvFileIO.read(cacheFile)
+            assertEquals("val_a", cacheProps["key_a"])
+            assertEquals("val_b", cacheProps["key_b"])
         }
     }
 
-    // ─── Caching Behavior ─────────────────────────────────────────────────────
+    // ─── Cache File Output ────────────────────────────────────────────────────
+    // Note: Gradle's up-to-date mechanism handles "skip if unchanged" at the build level.
+    // The task action ALWAYS fetches from AWS when it runs — these tests verify that
+    // the cache file is written correctly as a complete snapshot each time.
 
     @Nested
-    inner class Caching {
+    inner class CacheFileOutput {
 
         @Test
-        fun `uses cached secrets when refresh is false and cache file exists`() {
+        fun `writes complete snapshot to cache file on every run`() {
             val project = newProject()
-            val cacheFile = File(projectDir, ".env-dev-cached")
-            wireSecret(project, "cached", cacheFile = cacheFile)
-            val task = setupTask(project, refresh = false)
+            wireSecret(project, "db")
+            val task = setupTask(project)
 
-            // Pre-populate the cache file
-            EnvFileIO.write(cacheFile, mapOf("CACHED_KEY" to "cached-value"))
-
-            val executed = mutableListOf<String>()
             task.commandExecutor = { cmd, _, _ ->
-                executed.add(cmd)
-                "should-not-be-used"
+                if (cmd.contains("get-secret-value")) """{"DB_USER": "admin", "DB_PASS": "s3cret"}""" else ""
             }
 
             task.createSecretsFile()
 
-            // No AWS commands should have been executed
-            assertTrue(executed.none { it.contains("aws") }, "No AWS commands should run when using cache")
-
-            // .env should contain the cached value
-            val env = EnvFileIO.read(File(projectDir, ".env"))
-            assertEquals("cached-value", env["CACHED_KEY"])
+            val cache = EnvFileIO.read(File(projectDir, ".env-dev"))
+            assertEquals("admin", cache["DB_USER"])
+            assertEquals("s3cret", cache["DB_PASS"])
         }
 
         @Test
-        fun `refreshes secrets when refresh is true even if cache exists`() {
+        fun `second run overwrites cache with new AWS data (no accumulation)`() {
             val project = newProject()
-            val cacheFile = File(projectDir, ".env-dev-refresh")
-            wireSecret(project, "refresh", cacheFile = cacheFile)
-            val task = setupTask(project, refresh = true)
+            wireSecret(project, "db")
+            val task = setupTask(project)
 
-            // Pre-populate with stale value
-            EnvFileIO.write(cacheFile, mapOf("STALE_KEY" to "old-value"))
-
+            // First run: AWS returns key A
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) {
-                    """{"STALE_KEY": "new-value", "FRESH_KEY": "fresh"}"""
-                } else ""
+                if (cmd.contains("get-secret-value")) """{"KEY_A": "a1"}""" else ""
             }
-
             task.createSecretsFile()
 
-            val env = EnvFileIO.read(File(projectDir, ".env"))
-            assertEquals("new-value", env["STALE_KEY"])
-            assertEquals("fresh", env["FRESH_KEY"])
-        }
-
-        @Test
-        fun `fetches secrets when no cache file exists and refresh is false`() {
-            val project = newProject()
-            val cacheFile = File(projectDir, ".env-dev-nocache")
-            wireSecret(project, "nocache", cacheFile = cacheFile)
-            val task = setupTask(project, refresh = false)
-
-            // Ensure no cache file exists
-            if (cacheFile.exists()) cacheFile.delete()
-
-            val executed = mutableListOf<String>()
+            // Second run: AWS now returns different content (key B replaces key A)
             task.commandExecutor = { cmd, _, _ ->
-                executed.add(cmd)
-                if (cmd.contains("get-secret-value")) {
-                    """{"FIRST_RUN": "yes"}"""
-                } else ""
+                if (cmd.contains("get-secret-value")) """{"KEY_B": "b1"}""" else ""
             }
-
             task.createSecretsFile()
 
-            // Should have fetched since no cache existed
-            assertTrue(executed.any { it.contains("get-secret-value") })
-            assertTrue(cacheFile.exists(), "Cache file should be created after first fetch")
-
-            val env = EnvFileIO.read(File(projectDir, ".env"))
-            assertEquals("yes", env["FIRST_RUN"])
+            // Cache should reflect the latest AWS state (not accumulate stale keys)
+            val cache = EnvFileIO.read(File(projectDir, ".env-dev"))
+            assertEquals("b1", cache["KEY_B"])
+            assertFalse(cache.containsKey("KEY_A"), "Stale key from previous fetch should be gone")
         }
 
         @Test
-        fun `works when cache file is deleted but env file still exists`() {
+        fun `preserves manual env entries when merging fresh secrets`() {
             val project = newProject()
-            val cacheFile = File(projectDir, ".env-dev-deleted")
+            wireSecret(project, "db")
             val envFile = File(projectDir, ".env")
-            wireSecret(project, "deleted", cacheFile = cacheFile)
-            val task = setupTask(project, refresh = false, envFile = envFile)
+            val task = setupTask(project, envFile = envFile)
 
-            // Simulate: .env exists with manual entries, cache was deleted
+            // Simulate: .env exists with manual entries
             EnvFileIO.write(envFile, mapOf("MANUAL_KEY" to "manual-value"))
-            if (cacheFile.exists()) cacheFile.delete()
 
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) {
-                    """{"FROM_AWS": "recovered"}"""
-                } else ""
+                if (cmd.contains("get-secret-value")) """{"FROM_AWS": "recovered"}""" else ""
             }
 
             task.createSecretsFile()
@@ -422,31 +344,6 @@ class CreateSecretsTaskTest {
             assertEquals("recovered", env["FROM_AWS"])
             // Manual key should be preserved by merge
             assertEquals("manual-value", env["MANUAL_KEY"])
-        }
-
-        @Test
-        fun `cache file accumulates keys across refreshes`() {
-            val project = newProject()
-            val cacheFile = File(projectDir, ".env-dev-accum")
-            wireSecret(project, "accum", cacheFile = cacheFile)
-            val task = setupTask(project, refresh = true)
-
-            // First run: returns key A
-            task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) """{"KEY_A": "a1"}""" else ""
-            }
-            task.createSecretsFile()
-
-            // Second run: returns key B (different secret content)
-            task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) """{"KEY_B": "b1"}""" else ""
-            }
-            task.createSecretsFile()
-
-            // Cache should have both keys (merge behavior)
-            val cache = EnvFileIO.read(cacheFile)
-            assertEquals("a1", cache["KEY_A"])
-            assertEquals("b1", cache["KEY_B"])
         }
     }
 
@@ -458,8 +355,7 @@ class CreateSecretsTaskTest {
         @Test
         fun `throws when command executor fails`() {
             val project = newProject()
-            val cacheFile = File(projectDir, ".env-dev-fail")
-            wireSecret(project, "fail", cacheFile = cacheFile)
+            wireSecret(project, "fail")
             val task = setupTask(project)
 
             task.commandExecutor = { _, _, _ ->
@@ -473,15 +369,13 @@ class CreateSecretsTaskTest {
         }
 
         @Test
-        fun `uses cached secrets without any extra configuration`() {
+        fun `task runs cleanly with minimal configuration`() {
             val project = ProjectBuilder.builder().withProjectDir(projectDir).build()
             project.plugins.apply("io.github.adamarmistead.setenv")
 
             val extension = project.extensions.getByType(EnvExtension::class.java)
-            val cacheFile = File(projectDir, ".env-dev-cached")
-            val secret = extension.secrets.create("cached")
-            secret.secretId.set($$"myapp/${target}/cached")
-            secret.secretsFile.set(cacheFile)
+            val secret = extension.secrets.create("basic")
+            secret.secretId.set($$"myapp/${target}/basic")
 
             val task = project.tasks.named("createSecrets", CreateSecretsTask::class.java).get()
             task.secrets.add(secret)
@@ -489,14 +383,17 @@ class CreateSecretsTaskTest {
             task.region.set("use1")
             task.refresh.set(false)
             task.envFile.set(File(projectDir, ".env"))
+            task.cacheFile.set(File(projectDir, ".env-dev"))
 
-            // Pre-populate cache — no fetch needed
-            EnvFileIO.write(cacheFile, mapOf("CACHED" to "works-from-cache"))
+            // Simulate AWS response
+            task.commandExecutor = { cmd, _, _ ->
+                if (cmd.contains("get-secret-value")) """{"TOKEN": "abc123"}""" else ""
+            }
 
             task.createSecretsFile()
 
             val env = EnvFileIO.read(File(projectDir, ".env"))
-            assertEquals("works-from-cache", env["CACHED"])
+            assertEquals("abc123", env["TOKEN"])
         }
     }
 
@@ -525,8 +422,6 @@ class CreateSecretsTaskTest {
 
             assertEquals(60, task.commandTimeout.get())
             assertEquals(300, task.loginTimeout.get())
-            // refresh is wired to setEnv.refresh which defaults to false
-            // (can't assert here without evaluating setEnv, but the convention is set in the plugin)
         }
 
         @Test
@@ -550,9 +445,7 @@ class CreateSecretsTaskTest {
         @Test
         fun `plaintext without plaintextKey gives clear error`() {
             val project = newProject()
-            val cacheFile = File(projectDir, ".env-dev-nokey")
-            // Use plaintext=false in helper (so plaintextKey is NOT set), then enable plaintext
-            val secret = wireSecret(project, "nokey", cacheFile = cacheFile)
+            val secret = wireSecret(project, "nokey")
             secret.plaintext.set(true)
             // plaintextKey was never set — this is the misconfiguration we're testing
 
@@ -569,8 +462,7 @@ class CreateSecretsTaskTest {
         @Test
         fun `non-JSON secret without plaintext suggests fix`() {
             val project = newProject()
-            val cacheFile = File(projectDir, ".env-dev-plain")
-            wireSecret(project, "plain", cacheFile = cacheFile)
+            wireSecret(project, "plain")
             val task = setupTask(project)
 
             // Simulate AWS returning a plain string (not JSON)
@@ -587,8 +479,7 @@ class CreateSecretsTaskTest {
         @Test
         fun `empty secret response gives clear error`() {
             val project = newProject()
-            val cacheFile = File(projectDir, ".env-dev-empty")
-            wireSecret(project, "empty", cacheFile = cacheFile)
+            wireSecret(project, "empty")
             val task = setupTask(project)
 
             // Simulate AWS returning empty
@@ -604,8 +495,7 @@ class CreateSecretsTaskTest {
         @Test
         fun `JSON array secret gives clear error`() {
             val project = newProject()
-            val cacheFile = File(projectDir, ".env-dev-array")
-            wireSecret(project, "array", cacheFile = cacheFile)
+            wireSecret(project, "array")
             val task = setupTask(project)
 
             // Simulate AWS returning a JSON array (not object)
@@ -627,12 +517,10 @@ class CreateSecretsTaskTest {
         @Test
         fun `renamed keys survive secretKeys filter`() {
             val project = newProject()
-            val cacheFile = File(projectDir, ".env-dev-rename-filter")
             wireSecret(
                 project, "rename-filter",
                 renameKeys = mapOf("old_name" to "NEW_NAME"),
                 secretKeys = listOf("NEW_NAME", "KEEP_ME"),
-                cacheFile = cacheFile,
             )
             val task = setupTask(project)
 
@@ -654,12 +542,10 @@ class CreateSecretsTaskTest {
         @Test
         fun `renamed key not in filter is still included`() {
             val project = newProject()
-            val cacheFile = File(projectDir, ".env-dev-rename-nofilter")
             wireSecret(
                 project, "rename-nofilter",
                 renameKeys = mapOf("aws_key" to "CUSTOM_KEY"),
                 secretKeys = listOf("OTHER_KEY"),
-                cacheFile = cacheFile,
             )
             val task = setupTask(project)
 

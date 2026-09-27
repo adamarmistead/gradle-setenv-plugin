@@ -17,22 +17,22 @@ import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.Nested
+import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.TaskAction
 import javax.inject.Inject
 
 /**
- * Fetches secrets from AWS Secrets Manager (or reuses local cache) and merges them
- * into the shared `.env` file.
+ * Fetches secrets from AWS Secrets Manager and merges them into the shared `.env` file.
  *
- * For each configured [Secrets] block:
- * 1. Checks the per-secret cache file; skips AWS if present and `refresh` is false.
- * 2. Authenticates via STS identity check, running [loginCommand] if needed.
- * 3. Fetches the secret (JSON or plaintext) from AWS Secrets Manager.
- * 4. Applies key renaming and filtering.
- * 5. Writes to the cache file.
+ * **Caching is handled by Gradle's up-to-date mechanism.** The task declares its inputs
+ * (`target`, `region`, `refresh`, `secrets`) and outputs (`cacheFile`). Gradle skips
+ * the task entirely when no inputs have changed, so no AWS calls are made on redundant
+ * runs. When any input changes (e.g. region switches from `use1` to `use2`), Gradle
+ * re-runs the task and fresh values are fetched.
  *
- * After all secrets are processed, merges every cache file into the final `.env`,
- * preserving comments and manual edits.
+ * The [cacheFile] serves as a persistent snapshot of the last successful fetch, useful
+ * for inspection or debugging. It is always a complete, all-or-nothing set of secrets
+ * for the configured environment — no partial state.
  */
 abstract class CreateSecretsTask @Inject constructor(
     /** The Gradle project, used to resolve properties for placeholder substitution. */
@@ -79,7 +79,7 @@ abstract class CreateSecretsTask @Inject constructor(
     abstract val secrets: NamedDomainObjectContainer<Secrets>
 
     /**
-     * The final `.env` file that all secret cache files are merged into.
+     * The final `.env` file that secrets are merged into.
      * Marked `@Internal` (not `@OutputFile`) because [CreateEnvTask] already declares
      * this file as its output; declaring it on both tasks would cause Gradle to report
      * overlapping outputs in a real build.
@@ -88,19 +88,40 @@ abstract class CreateSecretsTask @Inject constructor(
     abstract val envFile: RegularFileProperty
 
     /**
+     * Per-environment cache file (e.g. `.env-dev`). Holds the combined values of all
+     * configured secrets for this environment. Managed automatically by the plugin —
+     * do not edit manually.
+     *
+     * The task uses an all-or-nothing strategy: if this file exists and `refresh` is
+     * false, it is read directly (no AWS calls). Otherwise, all secrets are fetched
+     * from AWS and the file is rebuilt from scratch.
+     */
+    @get:OutputFile
+    abstract val cacheFile: RegularFileProperty
+
+    /**
      * Pluggable command executor for unit testing without calling live AWS CLI.
      *
-     * @param command the shell command to execute
-     * @param timeoutSeconds maximum time allowed before the process is killed
-     * @param writeOutput when `true`, captured output is printed to stdout
-     * @return the combined stdout/stderr output of the command
+     * Signature: `(command: String, timeoutSeconds: Int, writeOutput: Boolean) -> String`
+     * - `command`: the shell command to execute
+     * - `timeoutSeconds`: maximum time allowed before the process is killed
+     * - `writeOutput`: when `true`, captured output is printed to stdout
+     * - returns the combined stdout/stderr output of the command
      */
     @get:Internal
     var commandExecutor: (command: String, timeoutSeconds: Int, writeOutput: Boolean) -> String =
         { cmd, timeout, write -> CommandExecutor.execute(cmd, timeout, write) }
 
     /**
-     * Task action: processes all configured secrets and merges results into the `.env` file.
+     * Task action: fetches all configured secrets from AWS and merges them into the `.env` file.
+     *
+     * **Caching is delegated to Gradle's up-to-date mechanism.** This method is only called
+     * when Gradle determines the task is out-of-date (i.e. an input changed: region, target,
+     * refresh flag, or secret configuration). When it runs, it always fetches fresh values
+     * from AWS — no internal file-existence checks needed.
+     *
+     * The [cacheFile] is written as a persistent snapshot of the last successful fetch,
+     * useful for inspection. It is always a complete, all-or-nothing set of secrets.
      *
      * Skips gracefully (no-op) when no secrets blocks are configured.
      */
@@ -111,45 +132,30 @@ abstract class CreateSecretsTask @Inject constructor(
             return
         }
 
+        val cacheFile = cacheFile.get().asFile
+        val envFile = envFile.get().asFile
         logger.lifecycle("targeting - environment:${target.get()} region:${region.get()}")
 
-        val cacheFiles = mutableListOf<java.io.File>()
-        val shouldRefresh = refresh.get()
-
+        val combined = linkedMapOf<String, String>()
         secrets.forEach { secret ->
-            if (secret.environment.isPresent) {
-                logger.lifecycle(
-                    "overriding target environment:${target.get()} with:${secret.environment.get()} for ${secret.name}",
-                )
-            }
             if (secret.region.isPresent) {
                 logger.lifecycle(
                     "overriding target region:${region.get()} with:${secret.region.get()} for ${secret.name}",
                 )
             }
 
-            val targetSecretEnv = secret.environment.orElse(target).get()
             val targetSecretRegion = secret.region.orElse(region).get()
-            val propertiesMap = PropertyMapBuilder.build(project, targetSecretEnv, targetSecretRegion)
+            val propertiesMap = PropertyMapBuilder.build(project, target.get(), targetSecretRegion)
             val substitutor = StringSubstitutor(propertiesMap).apply { setValueDelimiter(':') }
 
-            val cacheFile = secret.secretsFile.get().asFile
-            cacheFiles.add(cacheFile)
-
-            if (!shouldRefresh && cacheFile.exists()) {
-                logger.lifecycle("Using cached secrets for ${secret.name} from ${cacheFile.name}")
-                return@forEach
-            }
-
-            // We're about to hit AWS — make sure we can authenticate first.
+            // Authenticate once per unique profile (STS check is cheap if already authed)
             authenticate(secret.profile.get())
 
             val targetSecretId = substitutor.replace(secret.secretId.get())
-
             val result: String = fetchAwsSecret(secret, targetSecretId, propertiesMap)
 
             // Parse JSON secret or treat as a single plaintext value
-            val remoteProperties: MutableMap<String, Any?> = if (!secret.plaintext.get()) {
+            val remoteProperties: Map<String, Any?> = if (!secret.plaintext.get()) {
                 parseJsonSecret(result, secret.name)
             } else {
                 val key = secret.plaintextKey.orNull
@@ -157,29 +163,26 @@ abstract class CreateSecretsTask @Inject constructor(
                         "Secret '${secret.name}' has plaintext = true but no plaintextKey configured. " +
                             "Set plaintextKey to the env variable name, e.g. plaintextKey = 'API_TOKEN'",
                     )
-                mutableMapOf(key to result.trim())
+                mapOf(key to result.trim())
             }
 
             // Rename → filter, as a pure pipeline (no mutable state)
             val renameKeys = secret.renameKeys.orNull ?: emptyMap()
             val filterKeys = secret.secretKeys.orNull ?: emptyList()
 
-            val selectedProperties: Map<String, String> = remoteProperties
+            remoteProperties
                 .mapKeys { (original, _) -> renameKeys[original] ?: original }
                 .filterKeys { key -> filterKeys.isEmpty() || key in filterKeys || key in renameKeys.values }
-                .mapValues { (_, value) -> value.toString() }
-
-            // Write to per-secret cache file, merging with any previously cached keys
-            val cached = EnvFileIO.read(cacheFile)
-            cached.putAll(selectedProperties)
-            EnvFileIO.write(cacheFile, cached)
+                .forEach { (key, value) -> combined[key] = value.toString() }
         }
 
-        // Merge all cache files into the shared .env, preserving comments and manual edits
-        if (cacheFiles.isNotEmpty()) {
-            EnvFileIO.mergeInto(envFile.get().asFile, *cacheFiles.toTypedArray())
-            logger.lifecycle("Merged cached secrets into ${envFile.get().asFile.name}")
-        }
+        // Write the complete snapshot to the cache file (replaces previous content)
+        EnvFileIO.write(cacheFile, combined)
+        logger.lifecycle("Wrote ${combined.size} secret(s) to ${cacheFile.name}")
+
+        // Merge into the shared .env, preserving comments and manual edits
+        EnvFileIO.mergeInto(envFile, cacheFile)
+        logger.lifecycle("Merged secrets into ${envFile.name}")
     }
 
     /**
@@ -225,7 +228,7 @@ abstract class CreateSecretsTask @Inject constructor(
     private fun authenticate(profile: String) {
         val alreadyAuthed = try {
             commandExecutor("${AwsCli.STS_IDENTITY} --profile $profile", commandTimeout.get(), false).isNotBlank()
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             false
         }
 

@@ -141,5 +141,72 @@ class CreateEnvTaskTest {
             // No default → left as literal placeholder text
             assertEquals("\${totally_missing}", env["UNKNOWN_NO_DEFAULT"])
         }
+
+        @Test
+        fun `re-running createEnv does not destroy secrets already merged into the file`() {
+            val project = ProjectBuilder.builder().withProjectDir(projectDir).build()
+            project.plugins.apply("io.github.adamarmistead.setenv")
+
+            val envFile = File(projectDir, "regression.env")
+            val createEnv = project.tasks.named("createEnv", CreateEnvTask::class.java).get()
+            createEnv.target.set("dev")
+            createEnv.region.set("use1")
+            createEnv.envFile.set(envFile)
+            createEnv.environmentVariables.set(
+                mapOf(
+                    "APP_NAME" to "my-app",
+                    "AWS_REGION" to "\${region}",
+                ),
+            )
+
+            // First run: writes static vars
+            createEnv.createEnvFile()
+
+            // Simulate createSecrets merging secrets into the same file
+            EnvFileIO.mergeProperties(envFile, mapOf("DB_PASSWORD" to "secret123", "API_KEY" to "abc456"))
+
+            // Second run: re-runs (as Gradle would when it detects output changed)
+            createEnv.createEnvFile()
+
+            // Static vars still present and correct
+            val env = EnvFileIO.read(envFile)
+            assertEquals("my-app", env["APP_NAME"])
+            assertEquals("us-east-1", env["AWS_REGION"])
+
+            // Secrets survived the re-run
+            assertEquals("secret123", env["DB_PASSWORD"])
+            assertEquals("abc456", env["API_KEY"])
+        }
+
+        @Test
+        fun `re-running createEnv with changed region updates static vars but preserves secrets`() {
+            val project = ProjectBuilder.builder().withProjectDir(projectDir).build()
+            project.plugins.apply("io.github.adamarmistead.setenv")
+
+            val envFile = File(projectDir, "region-switch.env")
+            val createEnv = project.tasks.named("createEnv", CreateEnvTask::class.java).get()
+            createEnv.target.set("dev")
+            createEnv.region.set("use1")
+            createEnv.envFile.set(envFile)
+            createEnv.environmentVariables.set(
+                mapOf(
+                    "APP_NAME" to "my-app",
+                    "AWS_REGION" to "\${region}",
+                ),
+            )
+
+            // First run with use1
+            createEnv.createEnvFile()
+            EnvFileIO.mergeProperties(envFile, mapOf("DB_PASSWORD" to "secret123"))
+
+            // Switch region and re-run
+            createEnv.region.set("use2")
+            createEnv.createEnvFile()
+
+            val env = EnvFileIO.read(envFile)
+            assertEquals("my-app", env["APP_NAME"])
+            assertEquals("us-east-2", env["AWS_REGION"])  // updated (use2 → us-east-2)
+            assertEquals("secret123", env["DB_PASSWORD"])  // preserved
+        }
     }
 }

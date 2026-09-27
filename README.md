@@ -1,6 +1,8 @@
 # Gradle SetEnv Plugin
 
-A Gradle plugin that automates local environment setup (`.env`) and AWS Secrets Manager sync for developers.
+[![GitHub repository](https://img.shields.io/badge/GitHub-adamarmistead/gradle-setenv-plugin-blue?logo=github)](https://github.com/adamarmistead/gradle-setenv-plugin)
+
+A Gradle plugin that automates local environment setup (`.env`) and cloud secrets manager sync for developers.
 
 No more passing secret files over Slack, maintaining out-of-date onboarding guides, or manual configuration setup for new hires. Running `./gradlew setEnv` provisions a ready-to-run `.env` file for your local environment in seconds.
 
@@ -91,8 +93,8 @@ env {
 | `region`               | AWS region (full name or short code)    | `"us-east-1"`          |
 | `envFile`              | Output file path                        | `.env` in root project |
 | `environmentVariables` | Static / interpolated env vars to write | `{}`                   |
-| `regions`              | Custom short-code → full region mapping | built-in US regions    |
-| `regionShortCodes`     | Custom full-region → short code mapping | built-in US regions    |
+| `regions`              | Custom short-code → full region mapping | all 25 AWS commercial regions |
+| `regionShortCodes`     | Custom full-region → short code mapping | derived from `regions`   |
 
 ### `secrets { }` block
 
@@ -100,13 +102,11 @@ env {
 |----------------|-----------------------------------------------------------------------------------------|-----------------------------------------------------|
 | `secretId`     | AWS Secret ID (supports placeholders)                                                   | *required*                                          |
 | `profile`      | AWS CLI profile (used for both SSO login and fetching)                                  | `"default"`                                         |
-| `environment`  | Override target env for this secret only                                                | inherits from `env.target`                          |
-| `region`       | Override region for this secret only                                                    | inherits from `env.region`                          |
 | `secretKeys`   | Filter which JSON keys to extract (renamed keys always survive)                         | all keys                                            |
 | `renameKeys`   | Map original key → new ENV name                                                         | `{}`                                                |
 | `plaintext`    | Treat value as plain text, not JSON                                                     | `false`                                             |
 | `plaintextKey` | ENV key name when `plaintext = true`                                                    | *required if plaintext*                             |
-| `secretsFile`  | Cache file for this secret's fetched values (override to use separate files per secret) | `.env-<target>` in root project (shared by default) |
+| `secretsFile`  | Cache file for this environment's fetched values                                        | `.env-<target>` in root project (shared)            |
 
 ### Task properties (`createSecrets`)
 
@@ -171,27 +171,29 @@ The plugin applies several safeguards to keep secrets out of version control and
                     ┌──────────────▼──────────────┐
                     │       createEnv task         │
                     │  • Resolves placeholders     │
-                    │  • Writes .env (0600)        │
+                    │  • Merges into .env (0600)   │
                     │  • Ensures .gitignore entry  │
                     └──────────────┬──────────────┘
                                    │
                     ┌──────────────▼──────────────┐
                     │     createSecrets task       │
-                    │  For each secrets block:     │
-                    │   1. Check cache file        │
-                    │      (.env-<target>)         │
-                    │   2. If missing/refresh:     │
-                    │      a. STS identity check   │
-                    │      b. Login if needed      │
-                    │      c. Fetch from AWS       │
-                    │      d. Parse JSON/plaintext │
-                    │      e. Rename + filter keys │
-                    │      f. Write cache file     │
-                    │  Merge all caches → .env     │
+                    │  1. Check shared cache file  │
+                    │     (.env-<target>)          │
+                    │  2. If exists & !refresh:    │
+                    │     → merge into .env, done  │
+                    │  3. Otherwise, for each      │
+                    │     secrets block:           │
+                    │     a. STS identity check    │
+                    │     b. Login if needed       │
+                    │     c. Fetch from AWS        │
+                    │     d. Parse JSON/plaintext  │
+                    │     e. Rename + filter keys  │
+                    │  4. Write all → cache file   │
+                    │  5. Merge cache → .env       │
                     └─────────────────────────────┘
 ```
 
-**Caching:** Each secret block writes to its configured `secretsFile` (default: `.env-<target>`, shared across all secrets unless overridden). On subsequent runs, if the cache exists and `--refresh` is not set, the AWS CLI is never invoked. This makes local development fast and works offline.
+**Caching:** All secrets for a given environment share a single cache file (`.env-<target>`). On subsequent runs, if the cache exists and `--refresh` is not set, the AWS CLI is never invoked — all values are served from the local cache. This makes local development fast and works offline.
 
 **Merge strategy:** The final `.env` is updated in-place — existing comments, blank lines, and manually added keys are preserved. Only values supplied by the plugin are overwritten or appended.
 
