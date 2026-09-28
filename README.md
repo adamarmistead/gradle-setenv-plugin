@@ -1,6 +1,6 @@
 # Gradle SetEnv Plugin
 
-[![GitHub repository](https://img.shields.io/badge/GitHub-adamarmistead/gradle-setenv-plugin-blue?logo=github)](https://github.com/adamarmistead/gradle-setenv-plugin)
+[![GitHub repository](https://img.shields.io/badge/GitHub-adamarmistead%2Fgradle_setenv_plugin-blue?logo=github)](https://github.com/adamarmistead/gradle-setenv-plugin)
 
 A Gradle plugin that automates local environment setup (`.env`) and cloud secrets manager sync for developers.
 

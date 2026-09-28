@@ -33,9 +33,8 @@ internal object PropertyMapBuilder {
      */
     fun build(project: Project, targetEnv: String, targetRegion: String): Map<String, String> {
         val extension = project.extensions.findByType(EnvExtension::class.java)
-        val regions = extension?.regions?.orNull?.takeIf { it.isNotEmpty() } ?: Defaults.REGIONS
-        val regionShortCodes = extension?.regionShortCodes?.orNull?.takeIf { it.isNotEmpty() }
-            ?: Defaults.REGION_SHORT_CODES
+        val regions = Defaults.REGIONS + (extension?.regions?.orNull ?: emptyMap())
+        val regionShortCodes = Defaults.REGION_SHORT_CODES + (extension?.regionShortCodes?.orNull ?: emptyMap())
 
         val propertyMap = linkedMapOf<String, String>()
 

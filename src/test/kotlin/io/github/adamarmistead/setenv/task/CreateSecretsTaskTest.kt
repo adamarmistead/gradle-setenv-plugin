@@ -592,5 +592,19 @@ class CreateSecretsTaskTest {
             }
             assertTrue(ex.message!!.contains("dangerous character"))
         }
+
+        @Test
+        fun `times out and kills hanging command`() {
+            // ping localhost 10 times at 1s intervals = ~10s hang (works without a console)
+            val hangCommand = if (System.getProperty("os.name").contains("Windows", ignoreCase = true)) {
+                "ping -n 11 127.0.0.1"
+            } else {
+                "sleep 10"
+            }
+            val ex = org.junit.jupiter.api.Assertions.assertThrows(RuntimeException::class.java) {
+                CommandExecutor.execute(hangCommand, 1, false)
+            }
+            assertTrue(ex.message!!.contains("timed out"))
+        }
     }
 }

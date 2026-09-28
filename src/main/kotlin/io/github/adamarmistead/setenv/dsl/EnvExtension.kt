@@ -44,15 +44,15 @@ abstract class EnvExtension(
 
     /**
      * Custom short-code → full region name mapping.
-     * Merged with the built-in AWS regions (all 25 commercial regions).
-     * Use this to add custom or private regions. Example: `"myr1" to "my-region-1"`.
+     * Entries are **added on top of** (and can override) the built-in 25 AWS commercial regions —
+     * they do not replace them. Use this to add custom or private regions. Example: `"myr1" to "my-region-1"`.
      */
     abstract val regions: MapProperty<String, String>
 
     /**
      * Custom full region name → short code mapping.
-     * Merged with the built-in AWS regions (all 25 commercial regions).
-     * Use this to add custom or private regions. Example: `"my-region-1" to "myr1"`.
+     * Entries are **added on top of** (and can override) the built-in 25 AWS commercial regions —
+     * they do not replace them. Use this to add custom or private regions. Example: `"my-region-1" to "myr1"`.
      */
     abstract val regionShortCodes: MapProperty<String, String>
 

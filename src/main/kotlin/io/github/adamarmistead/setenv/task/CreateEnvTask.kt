@@ -10,6 +10,7 @@ import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.MapProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
+import org.gradle.work.DisableCachingByDefault
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.TaskAction
@@ -24,6 +25,7 @@ import javax.inject.Inject
  *
  * If no variables are configured, the task is a no-op (no file is created).
  */
+@DisableCachingByDefault(because = "Output depends on OS environment variables and system properties which are not declared as task inputs")
 abstract class CreateEnvTask @Inject constructor(
     /** The Gradle project, used to resolve properties for placeholder substitution. */
     @Internal private val project: Project,

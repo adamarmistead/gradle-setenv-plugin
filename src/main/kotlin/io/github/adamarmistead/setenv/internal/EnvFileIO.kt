@@ -3,6 +3,10 @@ package io.github.adamarmistead.setenv.internal
 import java.io.File
 import java.nio.file.FileSystems
 import java.nio.file.Files
+import java.nio.file.attribute.AclEntry
+import java.nio.file.attribute.AclEntryPermission
+import java.nio.file.attribute.AclEntryType
+import java.nio.file.attribute.AclFileAttributeView
 import java.nio.file.attribute.PosixFilePermission
 
 internal object EnvFileIO {
@@ -126,23 +130,78 @@ internal object EnvFileIO {
     }
 
     /**
-     * Restricts file permissions to owner read/write only (`rw-------` / `0600`) on POSIX filesystems.
+     * Restricts file permissions to owner read/write only.
      * Prevents other local users on shared machines from reading sensitive environment or cache files.
+     *
+     * - **POSIX:** sets `rw-------` (`0600`) via the Posix file attribute view.
+     * - **Windows (NTFS):** rewrites the ACL to a single ALLOW entry for the current user
+     *   with read/write data access, using the NIO [AclFileAttributeView].
+     *
+     * Best-effort: any failure is swallowed so permission hardening never breaks the build.
      */
     fun restrictFilePermissions(file: File) {
         try {
+            val path = file.toPath()
             if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
                 val permissions = setOf(
                     PosixFilePermission.OWNER_READ,
                     PosixFilePermission.OWNER_WRITE,
                 )
-                Files.setPosixFilePermissions(file.toPath(), permissions)
+                Files.setPosixFilePermissions(path, permissions)
+            } else {
+                restrictWindowsAcl(path)
             }
-            // Windows: NTFS ACLs already default new files to owner-only access,
-            // so no additional restriction is needed (or safely possible) here.
         } catch (_: Exception) {
             // Permission restriction is best-effort; don't fail the build if unsupported.
         }
+    }
+
+    /**
+     * Restricts a Windows file's ACL to owner-only access by rewriting it to a single
+     * ALLOW entry for the current user with full control.
+     *
+     * The security goal is to prevent **other** local users from reading the file, not to
+     * restrict the owner. So we grant the current user all permissions (full control) and
+     * remove every other ACL entry. This keeps the file fully functional for its owner
+     * while blocking all other accounts on the machine.
+     *
+     * Uses [java.nio.file.attribute.UserPrincipalLookupService] to resolve the current user's
+     * principal (handles domain-qualified names like `DOMAIN\user` correctly).
+     */
+    private fun restrictWindowsAcl(path: java.nio.file.Path) {
+        val aclView = Files.getFileAttributeView(path, AclFileAttributeView::class.java) ?: return
+        val lookupService = FileSystems.getDefault().userPrincipalLookupService ?: return
+        val currentUser = try {
+            lookupService.lookupPrincipalByName(System.getProperty("user.name"))
+        } catch (_: Exception) {
+            return
+        }
+
+        // Grant the owner full control — the point is to block OTHER users, not the owner.
+        // Uses all file-relevant permissions available in Java's NIO AclEntryPermission enum.
+        val ownerEntry = AclEntry.newBuilder()
+            .setPrincipal(currentUser)
+            .setType(AclEntryType.ALLOW)
+            .setPermissions(
+                AclEntryPermission.READ_DATA,
+                AclEntryPermission.WRITE_DATA,
+                AclEntryPermission.APPEND_DATA,
+                AclEntryPermission.READ_NAMED_ATTRS,
+                AclEntryPermission.WRITE_NAMED_ATTRS,
+                AclEntryPermission.EXECUTE,
+                AclEntryPermission.DELETE_CHILD,
+                AclEntryPermission.READ_ATTRIBUTES,
+                AclEntryPermission.WRITE_ATTRIBUTES,
+                AclEntryPermission.DELETE,
+                AclEntryPermission.READ_ACL,
+                AclEntryPermission.WRITE_ACL,
+                AclEntryPermission.WRITE_OWNER,
+                AclEntryPermission.SYNCHRONIZE,
+            )
+            .build()
+
+        // Replace the entire ACL with just our owner entry — removes all other users/groups.
+        aclView.setAcl(listOf(ownerEntry))
     }
 
     /**
