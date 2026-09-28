@@ -15,6 +15,7 @@ import org.gradle.api.Project
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
+import org.gradle.work.DisableCachingByDefault
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.Nested
 import org.gradle.api.tasks.OutputFile
@@ -34,6 +35,7 @@ import javax.inject.Inject
  * for inspection or debugging. It is always a complete, all-or-nothing set of secrets
  * for the configured environment — no partial state.
  */
+@DisableCachingByDefault(because = "Makes live AWS CLI calls; result depends on external AWS state not captured in task inputs")
 abstract class CreateSecretsTask @Inject constructor(
     /** The Gradle project, used to resolve properties for placeholder substitution. */
     @Internal private val project: Project,

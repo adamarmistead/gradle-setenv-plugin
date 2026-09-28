@@ -23,6 +23,7 @@ class SetEnvPluginFunctionalTest {
         .withPluginClasspath()
         .withArguments(*args)
         .withProjectDir(projectDir)
+        .withEnvironment(mapOf("CI" to ""))
 
     @Test
     fun `plugin applies and registers all tasks`() {

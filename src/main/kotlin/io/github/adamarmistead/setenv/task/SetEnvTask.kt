@@ -4,6 +4,7 @@ import io.github.adamarmistead.setenv.constants.Defaults
 import org.gradle.api.DefaultTask
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.UntrackedTask
 import org.gradle.api.tasks.options.Option
 
 /**
@@ -17,6 +18,7 @@ import org.gradle.api.tasks.options.Option
  * gradle setEnv --target=stg --region=use2 --refresh
  * ```
  */
+@UntrackedTask(because = "Orchestrator task that delegates to createEnv and createSecrets; produces no output of its own")
 abstract class SetEnvTask : DefaultTask() {
 
     init {

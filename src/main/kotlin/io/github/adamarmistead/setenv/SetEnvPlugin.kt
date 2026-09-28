@@ -100,7 +100,7 @@ class SetEnvPlugin : Plugin<Project> {
                 "cacheFile",
             )
 
-            if (System.getenv("CI") != null) {
+            if (!System.getenv("CI").isNullOrBlank()) {
                 createEnv.configure { it.enabled = false }
                 createSecrets.configure { it.enabled = false }
                 setEnv.configure { it.enabled = false }
