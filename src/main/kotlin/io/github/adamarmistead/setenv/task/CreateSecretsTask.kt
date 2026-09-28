@@ -137,9 +137,10 @@ abstract class CreateSecretsTask @Inject constructor(
         logger.lifecycle("targeting - environment:${target.get()} region:${region.get()}")
 
         val combined = linkedMapOf<String, String>()
+        val authenticatedProfiles = mutableSetOf<String>()
         secrets.forEach { secret ->
             if (secret.region.isPresent) {
-                logger.lifecycle(
+                logger.info(
                     "overriding target region:${region.get()} with:${secret.region.get()} for ${secret.name}",
                 )
             }
@@ -148,8 +149,12 @@ abstract class CreateSecretsTask @Inject constructor(
             val propertiesMap = PropertyMapBuilder.build(project, target.get(), targetSecretRegion)
             val substitutor = StringSubstitutor(propertiesMap).apply { setValueDelimiter(':') }
 
-            // Authenticate once per unique profile (STS check is cheap if already authed)
-            authenticate(secret.profile.get())
+            // Authenticate each unique profile only once per task run.
+            val profile = secret.profile.get()
+            if (profile !in authenticatedProfiles) {
+                authenticate(profile)
+                authenticatedProfiles.add(profile)
+            }
 
             val targetSecretId = substitutor.replace(secret.secretId.get())
             val result: String = fetchAwsSecret(secret, targetSecretId, propertiesMap)
@@ -199,7 +204,7 @@ abstract class CreateSecretsTask @Inject constructor(
         targetSecretId: String,
         propertiesMap: Map<String, String>,
     ): String {
-        logger.lifecycle("Fetching AWS secret ${secret.name} into cache")
+        logger.debug("Fetching AWS secret ${secret.name} into cache")
 
         val awsArgs = listOf(
             "--query SecretString",
@@ -233,13 +238,13 @@ abstract class CreateSecretsTask @Inject constructor(
         }
 
         if (alreadyAuthed) {
-            logger.lifecycle("Already authenticated (profile '$profile'); skipping login")
+            logger.info("Already authenticated (profile '$profile'); skipping login")
             return
         }
 
         val loginCmd = loginCommand.get()
             .replace("{profile}", profile)
-        logger.lifecycle("Not authenticated; running login: $loginCmd")
+        logger.info("Not authenticated; running login: $loginCmd")
         commandExecutor(loginCmd, loginTimeout.get(), false)
     }
 

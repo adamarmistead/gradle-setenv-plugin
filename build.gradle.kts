@@ -10,6 +10,9 @@ plugins {
 
     // Version derived from git tags (e.g. v0.1.0 → 0.1.0)
     id("com.palantir.git-version") version "3.4.0"
+
+    // Publishing to local Maven repository (~/.m2/repository)
+    `maven-publish`
 }
 
 // Wire the git-derived version into the project
@@ -74,5 +77,42 @@ tasks.jacocoTestReport {
     reports {
         xml.required.set(true)
         html.required.set(true)
+    }
+}
+
+tasks.jacocoTestCoverageVerification {
+    dependsOn(tasks.test)
+    violationRules {
+        rule {
+            limit {
+                minimum = "0.80".toBigDecimal()
+            }
+        }
+    }
+}
+
+tasks.named("check") {
+    dependsOn(tasks.jacocoTestCoverageVerification)
+}
+
+// ── Publishing ────────────────────────────────────────────────────────────────
+publishing {
+    publications {
+        withType<MavenPublication> {
+            pom {
+                name.set("Gradle SetEnv Plugin")
+                description.set("Generate .env files from Gradle properties, OS environment variables, and cloud secrets managers (AWS, GCP, Azure)")
+                url.set("https://github.com/adamarmistead/gradle-setenv-plugin")
+                licenses {
+                    license {
+                        name.set("The Apache License, Version 2.0")
+                        url.set("https://www.apache.org/licenses/LICENSE-2.0.txt")
+                    }
+                }
+            }
+        }
+    }
+    repositories {
+        mavenLocal()
     }
 }
