@@ -48,6 +48,7 @@ class SetEnvPlugin : Plugin<Project> {
             task.target.convention(envExtension.target)
             task.region.convention(envExtension.region)
             task.refresh.convention(false)
+            task.dryRun.convention(false)
         }
 
         val createEnv: TaskProvider<CreateEnvTask> = project.tasks.register("createEnv", CreateEnvTask::class.java) { task ->
@@ -55,6 +56,7 @@ class SetEnvPlugin : Plugin<Project> {
             task.environmentVariables.set(envExtension.environmentVariables)
             task.target.set(setEnv.flatMap { it.target })
             task.region.set(setEnv.flatMap { it.region })
+            task.dryRun.set(setEnv.flatMap { it.dryRun })
         }
 
         val createSecrets: TaskProvider<CreateSecretsTask> = project.tasks.register("createSecrets", CreateSecretsTask::class.java) { task ->
@@ -65,6 +67,7 @@ class SetEnvPlugin : Plugin<Project> {
             task.target.set(setEnv.flatMap { it.target })
             task.region.set(setEnv.flatMap { it.region })
             task.refresh.set(setEnv.flatMap { it.refresh })
+            task.dryRun.set(setEnv.flatMap { it.dryRun })
             task.cacheFile.convention(
                 setEnv.flatMap { t ->
                     t.target.map { env ->
@@ -84,6 +87,8 @@ class SetEnvPlugin : Plugin<Project> {
             secret.secretKeys.convention(emptyList())
             secret.plaintext.convention(Defaults.IS_PLAINTEXT)
             secret.renameKeys.convention(emptyMap())
+            secret.writeToFile.convention(false)
+            secret.decode.convention(false)
         }
 
         project.afterEvaluate {

@@ -20,6 +20,7 @@ import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.Nested
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.TaskAction
+import java.util.Base64
 import javax.inject.Inject
 
 /**
@@ -37,7 +38,9 @@ import javax.inject.Inject
  */
 @DisableCachingByDefault(because = "Makes live AWS CLI calls; result depends on external AWS state not captured in task inputs")
 abstract class CreateSecretsTask @Inject constructor(
-    /** The Gradle project, used to resolve properties for placeholder substitution. */
+    /**
+     * The Gradle project, used to resolve properties for placeholder substitution.
+     */
     @Internal private val project: Project,
 ) : DefaultTask() {
 
@@ -46,19 +49,33 @@ abstract class CreateSecretsTask @Inject constructor(
         description = "Fetch or reuse cached secrets and merge them into the active env file"
     }
 
-    /** The target environment name (e.g. `dev`, `stg`). */
+    /**
+     * The target environment name (e.g. `dev`, `stg`).
+     */
     @get:Input
     abstract val target: Property<String>
 
-    /** The AWS region (full name or short code). */
+    /**
+     * The AWS region (full name or short code).
+     */
     @get:Input
     abstract val region: Property<String>
 
-    /** When `true`, bypasses the local cache and re-fetches all secrets from AWS. */
+    /**
+     * When `true`, bypasses the local cache and re-fetches all secrets from AWS.
+     */
     @get:Input
     abstract val refresh: Property<Boolean>
 
-    /** Timeout in seconds for non-interactive AWS CLI commands (fetch, STS check). */
+    /**
+     * When `true`, logs what would be written (keys only, values masked) without touching disk.
+     */
+    @get:Input
+    abstract val dryRun: Property<Boolean>
+
+    /**
+     * Timeout in seconds for non-interactive AWS CLI commands (fetch, STS check).
+     */
     @get:Input
     abstract val commandTimeout: Property<Int>
 
@@ -76,7 +93,9 @@ abstract class CreateSecretsTask @Inject constructor(
     @get:Input
     abstract val loginCommand: Property<String>
 
-    /** The collection of [Secrets] blocks to process. Populated from the `env { secrets { } }` DSL. */
+    /**
+     * The collection of [Secrets] blocks to process. Populated from the `env { secrets { } }` DSL.
+     */
     @get:Nested
     abstract val secrets: NamedDomainObjectContainer<Secrets>
 
@@ -170,17 +189,69 @@ abstract class CreateSecretsTask @Inject constructor(
                         "Secret '${secret.name}' has plaintext = true but no plaintextKey configured. " +
                             "Set plaintextKey to the env variable name, e.g. plaintextKey = 'API_TOKEN'",
                     )
-                mapOf(key to result.trim())
+                var value = result.trim()
+
+                // Base64 decode if requested (plaintext secrets only)
+                if (secret.decode.get()) {
+                    try {
+                        value = String(Base64.getDecoder().decode(value))
+                    } catch (e: IllegalArgumentException) {
+                        throw IllegalStateException(
+                            "Secret '${secret.name}' has decode = true but the value is not valid base64. " +
+                                "Check that the secret is stored as base64-encoded data in AWS Secrets Manager.",
+                        )
+                    }
+                }
+
+                if (value.contains('\n') && secret.writeToFile.get()) {
+                    // Multi-line non-JSON value (e.g. PEM cert) → write to protected file,
+                    // env var gets the absolute path.
+                    val secretFile = EnvFileIO.writeSecretFile(envFile.parentFile, key, value)
+                    logger.lifecycle(
+                        "Wrote multi-line secret '${secret.name}' to ${secretFile.absolutePath}",
+                    )
+                    mapOf(key to secretFile.absolutePath)
+                } else {
+                    if (value.contains('\n')) {
+                        throw IllegalStateException(
+                            "Secret '${secret.name}' value for key '$key' contains newlines and cannot be " +
+                                "written inline to .env (the format is line-based). " +
+                                "Set writeToFile = true to store it in a protected file instead.",
+                        )
+                    }
+                    mapOf(key to value)
+                }
             }
 
             // Rename → filter, as a pure pipeline (no mutable state)
             val renameKeys = secret.renameKeys.orNull ?: emptyMap()
             val filterKeys = secret.secretKeys.orNull ?: emptyList()
 
-            remoteProperties
+            val filtered = remoteProperties
                 .mapKeys { (original, _) -> renameKeys[original] ?: original }
                 .filterKeys { key -> filterKeys.isEmpty() || key in filterKeys || key in renameKeys.values }
-                .forEach { (key, value) -> combined[key] = value.toString() }
+
+            // Required key validation: if secretKeys is non-empty, all listed keys must be present
+            if (filterKeys.isNotEmpty()) {
+                val expectedKeys = filterKeys.toSet() + renameKeys.values.toSet()
+                val missing = expectedKeys - filtered.keys
+                if (missing.isNotEmpty()) {
+                    throw IllegalStateException(
+                        "Secret '${secret.name}' is missing required key(s): $missing. " +
+                            "Available keys: ${filtered.keys}. " +
+                            "Check that the secret in AWS Secrets Manager contains these keys.",
+                    )
+                }
+            }
+
+            filtered.forEach { (key, value) -> combined[key] = value.toString() }
+        }
+
+        // Dry-run: log what would be written, skip all file writes
+        if (dryRun.get()) {
+            logger.lifecycle("[DRY RUN] Would write ${combined.size} secret(s):")
+            combined.forEach { (key, _) -> logger.lifecycle("  $key=***") }
+            return
         }
 
         // Write the complete snapshot to the cache file (replaces previous content)

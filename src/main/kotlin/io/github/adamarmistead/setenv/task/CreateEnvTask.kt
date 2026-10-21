@@ -27,7 +27,9 @@ import javax.inject.Inject
  */
 @DisableCachingByDefault(because = "Output depends on OS environment variables and system properties which are not declared as task inputs")
 abstract class CreateEnvTask @Inject constructor(
-    /** The Gradle project, used to resolve properties for placeholder substitution. */
+    /**
+     * The Gradle project, used to resolve properties for placeholder substitution.
+     */
     @Internal private val project: Project,
 ) : DefaultTask() {
 
@@ -36,11 +38,15 @@ abstract class CreateEnvTask @Inject constructor(
         description = "Create .env file and populate with the provided environment variables"
     }
 
-    /** The target environment name (e.g. `dev`, `stg`). */
+    /**
+     * The target environment name (e.g. `dev`, `stg`).
+     */
     @get:Input
     abstract val target: Property<String>
 
-    /** The AWS region (full name or short code). */
+    /**
+     * The AWS region (full name or short code).
+     */
     @get:Input
     abstract val region: Property<String>
 
@@ -51,7 +57,15 @@ abstract class CreateEnvTask @Inject constructor(
     @get:Input
     abstract val environmentVariables: MapProperty<String, String>
 
-    /** The output `.env` file path. */
+    /**
+     * When `true`, logs what would be written (keys only, values masked) without touching disk.
+     */
+    @get:Input
+    abstract val dryRun: Property<Boolean>
+
+    /**
+     * The output `.env` file path.
+     */
     @get:OutputFile
     abstract val envFile: RegularFileProperty
 
@@ -76,6 +90,13 @@ abstract class CreateEnvTask @Inject constructor(
         val variables = environmentVariables.get()
         if (variables.isNotEmpty()) {
             val substituted = variables.mapValues { (_, value) -> substitutor.replace(value) }
+
+            if (dryRun.get()) {
+                logger.lifecycle("[DRY RUN] Would write ${substituted.size} variable(s):")
+                substituted.forEach { (key, _) -> logger.lifecycle("  $key=***") }
+                return
+            }
+
             // Use mergeProperties so re-running this task doesn't destroy secrets
             // that createSecrets has already merged into the same file.
             EnvFileIO.mergeProperties(envFile.get().asFile, substituted)

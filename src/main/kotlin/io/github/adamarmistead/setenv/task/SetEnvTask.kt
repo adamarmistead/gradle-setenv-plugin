@@ -49,4 +49,12 @@ abstract class SetEnvTask : DefaultTask() {
     @get:Option(option = "refresh", description = "Force refresh of cached secrets from AWS")
     @get:Input
     abstract val refresh: Property<Boolean>
+
+    /**
+     * When `true`, logs what would be written (keys only, values masked) without touching disk.
+     * Can be overridden via `--dryRun` on the command line.
+     */
+    @get:Option(option = "dryRun", description = "Show what would be written without modifying any files")
+    @get:Input
+    abstract val dryRun: Property<Boolean>
 }

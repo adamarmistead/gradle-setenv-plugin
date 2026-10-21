@@ -80,6 +80,7 @@ env {
 - **CI safety** — tasks auto-disable when `CI=true` is set
 - **Security hardening** — generated files restricted to owner-only (`0600`), `.gitignore` auto-managed, path traversal blocked, shell metacharacters rejected in commands
 - **Pluggable auth** — customize the login command (e.g. for non-SSO flows) via `loginCommand`
+- **Multi-line secret files** — PEM certs and other multi-line values written to protected files with path-based env vars
 
 ---
 
@@ -106,6 +107,7 @@ env {
 | `renameKeys`   | Map original key → new ENV name                                                         | `{}`                                                |
 | `plaintext`    | Treat value as plain text, not JSON                                                     | `false`                                             |
 | `plaintextKey` | ENV key name when `plaintext = true`                                                    | *required if plaintext*                             |
+| `writeToFile`  | Write multi-line plaintext to a protected file; env var gets the path                   | `false`                                             |
 | `secretsFile`  | Cache file for this environment's fetched values                                        | `.env-<target>` in root project (shared)            |
 
 ### Task properties (`createSecrets`)
@@ -123,6 +125,32 @@ env {
 >     loginCommand = "my-custom-login --profile {profile}"
 > }
 > ```
+
+### Multi-line Secrets (PEM Certificates, etc.)
+
+Some secrets are multi-line values that don't fit in a single `.env` line — the most common example is a PEM-encoded certificate or private key. The `writeToFile` option handles this cleanly:
+
+```kotlin
+secrets {
+    create("tlsCert") {
+        secretId = "${project.name}/\${target}/tls-cert"
+        plaintext = true
+        plaintextKey = "TLS_CERT_PATH"
+        writeToFile = true  // value → .env-secrets/TLS_CERT_PATH, env var gets the file path
+    }
+}
+```
+
+**What happens:**
+
+1. The multi-line value is written to `.env-secrets/TLS_CERT_PATH` (sibling to your `.env`)
+2. The file is restricted to `0600` (owner read/write only)
+3. The `.env` entry becomes `TLS_CERT_PATH=/absolute/path/to/.env-secrets/TLS_CERT_PATH`
+4. Your application reads the cert from the path in the env var
+
+**When `writeToFile = false` (default):** multi-line values cause a build error — the `.env` format is line-based and cannot represent them inline. Set `writeToFile = true` for any multi-line secret.
+
+> **Note:** Single-line plaintext values (tokens, passwords) are always written inline regardless of this flag. JSON secrets are parsed and minified automatically — no action needed.
 
 ---
 
@@ -153,7 +181,7 @@ The plugin applies several safeguards to keep secrets out of version control and
 
 | Mechanism                   | Detail                                                                                                                                                      |
 |-----------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **File permissions**        | Generated `.env` and cache files are restricted to `rw-------` (owner read/write only) on POSIX systems.                                                    |
+| **File permissions**        | Generated `.env`, cache files, and `.env-secrets/` files are restricted to `rw-------` (owner read/write only) on POSIX systems.                               |
 | **`.gitignore` management** | The plugin ensures a `.env*` wildcard pattern exists in the project's `.gitignore`, creating or appending as needed.                                        |
 | **Path validation**         | All configured file paths (`envFile`, `secretsFile`) must resolve within the project directory. Path traversal attempts are rejected at configuration time. |
 | **Command injection guard** | The internal command executor rejects any command containing shell metacharacters (`;`, `&`, `\|`, backticks, `$`, redirects, quotes, newlines).            |
