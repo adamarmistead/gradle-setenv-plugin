@@ -195,7 +195,7 @@ abstract class CreateSecretsTask @Inject constructor(
                 if (secret.decode.get()) {
                     try {
                         value = String(Base64.getDecoder().decode(value))
-                    } catch (e: IllegalArgumentException) {
+                    } catch (_: IllegalArgumentException) {
                         throw IllegalStateException(
                             "Secret '${secret.name}' has decode = true but the value is not valid base64. " +
                                 "Check that the secret is stored as base64-encoded data in AWS Secrets Manager.",
