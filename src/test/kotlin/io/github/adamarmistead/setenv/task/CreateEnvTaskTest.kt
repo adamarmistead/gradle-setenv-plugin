@@ -209,4 +209,50 @@ class CreateEnvTaskTest {
             assertEquals("secret123", env["DB_PASSWORD"])  // preserved
         }
     }
+
+    @Nested
+    inner class DryRun {
+
+        @Test
+        fun `dry run does not write the env file`() {
+            val project = ProjectBuilder.builder().withProjectDir(projectDir).build()
+            project.plugins.apply("io.github.adamarmistead.setenv")
+
+            val envFile = File(projectDir, "dryrun.env")
+            val createEnv = project.tasks.named("createEnv", CreateEnvTask::class.java).get()
+            createEnv.target.set("dev")
+            createEnv.region.set("use1")
+            createEnv.envFile.set(envFile)
+            createEnv.environmentVariables.set(
+                mapOf(
+                    "TARGET" to "\${target}",
+                    "APP_NAME" to "my-app",
+                ),
+            )
+            createEnv.dryRun.set(true)
+
+            createEnv.createEnvFile()
+
+            assertFalse(envFile.exists(), "env file should not be created in dry-run mode")
+        }
+
+        @Test
+        fun `dry run with no variables is a no-op`() {
+            val project = ProjectBuilder.builder().withProjectDir(projectDir).build()
+            project.plugins.apply("io.github.adamarmistead.setenv")
+
+            val envFile = File(projectDir, "dryrun-empty.env")
+            val createEnv = project.tasks.named("createEnv", CreateEnvTask::class.java).get()
+            createEnv.target.set("dev")
+            createEnv.region.set("use1")
+            createEnv.envFile.set(envFile)
+            createEnv.environmentVariables.set(emptyMap())
+            createEnv.dryRun.set(true)
+
+            // Should not throw
+            createEnv.createEnvFile()
+
+            assertFalse(envFile.exists())
+        }
+    }
 }

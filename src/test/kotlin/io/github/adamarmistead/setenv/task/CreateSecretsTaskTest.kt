@@ -8,6 +8,7 @@ import org.gradle.testfixtures.ProjectBuilder
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.fail
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -19,6 +20,20 @@ class CreateSecretsTaskTest {
     lateinit var projectDir: File
 
     // ─── Helpers ───────────────────────────────────────────────────────────────
+
+    /**
+     * Wraps a secret value in the AWS CLI `--output json` response envelope.
+     * The real CLI returns: {"ARN":"...","Name":"...","SecretString":"<value>"}
+     */
+    private fun awsResponse(secretString: String): String {
+        val escaped = secretString
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+        return """{"ARN":"arn:aws:secretsmanager:us-east-1:123456789012:secret:test","Name":"test","SecretString":"$escaped"}"""
+    }
 
     private fun newProject(): org.gradle.api.Project {
         val project = ProjectBuilder.builder().withProjectDir(projectDir).build()
@@ -128,7 +143,7 @@ class CreateSecretsTaskTest {
             task.commandExecutor = { cmd, _, _ ->
                 executed.add(cmd)
                 if (cmd.contains("get-secret-value")) {
-                    """{"username": "admin", "password": "s3cret", "unused": "x"}"""
+                    awsResponse("""{"username": "admin", "password": "s3cret", "unused": "x"}""")
                 } else ""
             }
 
@@ -151,7 +166,7 @@ class CreateSecretsTaskTest {
 
             task.commandExecutor = { cmd, _, _ ->
                 if (cmd.contains("get-secret-value")) {
-                    """{"host": "db.example.com", "port": "5432", "user": "root"}"""
+                    awsResponse("""{"host": "db.example.com", "port": "5432", "user": "root"}""")
                 } else ""
             }
 
@@ -181,7 +196,7 @@ class CreateSecretsTaskTest {
 
             task.commandExecutor = { cmd, _, _ ->
                 if (cmd.contains("get-secret-value")) {
-                    "ghp_abc123xyz"
+                    awsResponse("ghp_abc123xyz")
                 } else ""
             }
 
@@ -203,7 +218,7 @@ class CreateSecretsTaskTest {
 
             task.commandExecutor = { cmd, _, _ ->
                 if (cmd.contains("get-secret-value")) {
-                    "raw-value-123"
+                    awsResponse("raw-value-123")
                 } else ""
             }
 
@@ -235,8 +250,8 @@ class CreateSecretsTaskTest {
 
             task.commandExecutor = { cmd, _, _ ->
                 when {
-                    cmd.contains("myapp/dev/db") -> """{"username": "dbadmin", "password": "p1"}"""
-                    cmd.contains("myapp/dev/api-keys") -> """{"api_key": "sk-123", "api_secret": "sec-456"}"""
+                    cmd.contains("myapp/dev/db") -> awsResponse("""{"username": "dbadmin", "password": "p1"}""")
+                    cmd.contains("myapp/dev/api-keys") -> awsResponse("""{"api_key": "sk-123", "api_secret": "sec-456"}""")
                     else -> ""
                 }
             }
@@ -258,8 +273,8 @@ class CreateSecretsTaskTest {
 
             task.commandExecutor = { cmd, _, _ ->
                 when {
-                    cmd.contains("myapp/dev/a") -> """{"key_a": "val_a"}"""
-                    cmd.contains("myapp/dev/b") -> """{"key_b": "val_b"}"""
+                    cmd.contains("myapp/dev/a") -> awsResponse("""{"key_a": "val_a"}""")
+                    cmd.contains("myapp/dev/b") -> awsResponse("""{"key_b": "val_b"}""")
                     else -> ""
                 }
             }
@@ -290,7 +305,7 @@ class CreateSecretsTaskTest {
             val task = setupTask(project)
 
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) """{"DB_USER": "admin", "DB_PASS": "s3cret"}""" else ""
+                if (cmd.contains("get-secret-value")) awsResponse("""{"DB_USER": "admin", "DB_PASS": "s3cret"}""") else ""
             }
 
             task.createSecretsFile()
@@ -308,13 +323,13 @@ class CreateSecretsTaskTest {
 
             // First run: AWS returns key A
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) """{"KEY_A": "a1"}""" else ""
+                if (cmd.contains("get-secret-value")) awsResponse("""{"KEY_A": "a1"}""") else ""
             }
             task.createSecretsFile()
 
             // Second run: AWS now returns different content (key B replaces key A)
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) """{"KEY_B": "b1"}""" else ""
+                if (cmd.contains("get-secret-value")) awsResponse("""{"KEY_B": "b1"}""") else ""
             }
             task.createSecretsFile()
 
@@ -335,7 +350,7 @@ class CreateSecretsTaskTest {
             EnvFileIO.write(envFile, mapOf("MANUAL_KEY" to "manual-value"))
 
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) """{"FROM_AWS": "recovered"}""" else ""
+                if (cmd.contains("get-secret-value")) awsResponse("""{"FROM_AWS": "recovered"}""") else ""
             }
 
             task.createSecretsFile()
@@ -387,7 +402,7 @@ class CreateSecretsTaskTest {
 
             // Simulate AWS response
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) """{"TOKEN": "abc123"}""" else ""
+                if (cmd.contains("get-secret-value")) awsResponse("""{"TOKEN": "abc123"}""") else ""
             }
 
             task.createSecretsFile()
@@ -413,6 +428,7 @@ class CreateSecretsTaskTest {
             assertFalse(secret.plaintext.get())
             assertTrue(secret.secretKeys.get().isEmpty())
             assertTrue(secret.renameKeys.get().isEmpty())
+            assertFalse(secret.writeToFile.get())
         }
 
         @Test
@@ -450,7 +466,7 @@ class CreateSecretsTaskTest {
             // plaintextKey was never set — this is the misconfiguration we're testing
 
             val task = setupTask(project)
-            task.commandExecutor = { _, _, _ -> "some-raw-value" }
+            task.commandExecutor = { _, _, _ -> awsResponse("some-raw-value") }
 
             val ex = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
                 task.createSecretsFile()
@@ -466,7 +482,7 @@ class CreateSecretsTaskTest {
             val task = setupTask(project)
 
             // Simulate AWS returning a plain string (not JSON)
-            task.commandExecutor = { _, _, _ -> "my-plain-password-123" }
+            task.commandExecutor = { _, _, _ -> awsResponse("my-plain-password-123") }
 
             val ex = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
                 task.createSecretsFile()
@@ -499,7 +515,7 @@ class CreateSecretsTaskTest {
             val task = setupTask(project)
 
             // Simulate AWS returning a JSON array (not object)
-            task.commandExecutor = { _, _, _ -> """["item1", "item2"]""" }
+            task.commandExecutor = { _, _, _ -> awsResponse("""["item1", "item2"]""") }
 
             val ex = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
                 task.createSecretsFile()
@@ -526,7 +542,7 @@ class CreateSecretsTaskTest {
 
             task.commandExecutor = { cmd, _, _ ->
                 if (cmd.contains("get-secret-value")) {
-                    """{"old_name": "renamed-value", "KEEP_ME": "kept", "DROP_ME": "dropped"}"""
+                    awsResponse("""{"old_name": "renamed-value", "KEEP_ME": "kept", "DROP_ME": "dropped"}""")
                 } else ""
             }
 
@@ -551,7 +567,7 @@ class CreateSecretsTaskTest {
 
             task.commandExecutor = { cmd, _, _ ->
                 if (cmd.contains("get-secret-value")) {
-                    """{"aws_key": "AKIA123", "OTHER_KEY": "val", "IGNORED": "x"}"""
+                    awsResponse("""{"aws_key": "AKIA123", "OTHER_KEY": "val", "IGNORED": "x"}""")
                 } else ""
             }
 
@@ -561,6 +577,412 @@ class CreateSecretsTaskTest {
             assertEquals("AKIA123", env["CUSTOM_KEY"], "Renamed key should survive even if not in filter")
             assertEquals("val", env["OTHER_KEY"])
             assertFalse(env.containsKey("IGNORED"))
+        }
+    }
+
+    // ─── WriteToFile (Multi-line Plaintext) ──────────────────────────────────
+
+    @Nested
+    inner class WriteToFile {
+
+        @Test
+        fun `multi-line plaintext with writeToFile writes to file and env var gets path`() {
+            val project = newProject()
+            val secret = wireSecret(
+                project, "cert",
+                plaintext = true,
+                plaintextKey = "MY_CERT",
+            )
+            secret.writeToFile.set(true)
+            val task = setupTask(project)
+
+            val pemValue = """-----BEGIN CERTIFICATE-----
+MIIC8zCCAdugAwIBAgIU
+abc123def456ghi789
+-----END CERTIFICATE-----"""
+
+            task.commandExecutor = { cmd, _, _ ->
+                if (cmd.contains("get-secret-value")) awsResponse(pemValue) else ""
+            }
+
+            task.createSecretsFile()
+
+            // Env var should contain the absolute file path, not the raw PEM
+            val env = EnvFileIO.read(File(projectDir, ".env"))
+            val envValue = env["MY_CERT"] ?: fail("MY_CERT should be in .env")
+            assertTrue(envValue.endsWith("MY_CERT"), "Env var should be a path ending with MY_CERT, got: $envValue")
+
+            // The file should exist and contain the original PEM content
+            val secretFile = File(projectDir, ".env-secrets/MY_CERT")
+            assertTrue(secretFile.exists(), "Secret file should exist at .env-secrets/MY_CERT")
+            assertEquals(pemValue, secretFile.readText())
+        }
+
+        @Test
+        fun `multi-line plaintext without writeToFile fails with clear error`() {
+            val project = newProject()
+            wireSecret(
+                project, "multiline",
+                plaintext = true,
+                plaintextKey = "MULTI_VAL",
+            )
+            // writeToFile defaults to false
+            val task = setupTask(project)
+
+            val multiLineValue = "line1\nline2\nline3"
+            task.commandExecutor = { cmd, _, _ ->
+                if (cmd.contains("get-secret-value")) awsResponse(multiLineValue) else ""
+            }
+
+            val ex = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
+                task.createSecretsFile()
+            }
+            assertTrue(ex.message!!.contains("contains newlines"), "Should mention newlines")
+            assertTrue(ex.message!!.contains("writeToFile = true"), "Should suggest writeToFile")
+
+            // No .env file should have been created (failed before writing)
+            assertFalse(File(projectDir, ".env").exists())
+        }
+
+        @Test
+        fun `single-line plaintext is unaffected by writeToFile`() {
+            val project = newProject()
+            val secret = wireSecret(
+                project, "token",
+                plaintext = true,
+                plaintextKey = "API_TOKEN",
+            )
+            secret.writeToFile.set(true) // even with writeToFile=true, single-line stays inline
+            val task = setupTask(project)
+
+            task.commandExecutor = { cmd, _, _ ->
+                if (cmd.contains("get-secret-value")) awsResponse("ghp_single_line_token") else ""
+            }
+
+            task.createSecretsFile()
+
+            val env = EnvFileIO.read(File(projectDir, ".env"))
+            assertEquals("ghp_single_line_token", env["API_TOKEN"])
+
+            // No secret file should have been created for single-line values
+            assertFalse(File(projectDir, ".env-secrets").exists())
+        }
+
+        @Test
+        fun `writeToFile secret file lands in the env-secrets subdirectory`() {
+            val project = newProject()
+            val secret = wireSecret(
+                project, "key",
+                plaintext = true,
+                plaintextKey = "PRIVATE_KEY",
+            )
+            secret.writeToFile.set(true)
+            val task = setupTask(project)
+
+            val multiLine = "part1\npart2"
+            task.commandExecutor = { cmd, _, _ ->
+                if (cmd.contains("get-secret-value")) awsResponse(multiLine) else ""
+            }
+
+            task.createSecretsFile()
+
+            val secretDir = File(projectDir, ".env-secrets")
+            assertTrue(secretDir.exists(), ".env-secrets directory should exist")
+            assertTrue(secretDir.isDirectory)
+        }
+
+        @Test
+        fun `writeToFile works alongside JSON secrets in same run`() {
+            val project = newProject()
+            // JSON secret (normal path)
+            wireSecret(project, "db")
+            // Plaintext multi-line with writeToFile
+            val certSecret = wireSecret(
+                project, "cert",
+                plaintext = true,
+                plaintextKey = "TLS_CERT",
+            )
+            certSecret.writeToFile.set(true)
+            val task = setupTask(project)
+
+            task.commandExecutor = { cmd, _, _ ->
+                when {
+                    cmd.contains("myapp/dev/db") -> awsResponse("""{"DB_USER": "admin"}""")
+                    cmd.contains("myapp/dev/cert") -> awsResponse("cert-line1\ncert-line2")
+                    else -> ""
+                }
+            }
+
+            task.createSecretsFile()
+
+            val env = EnvFileIO.read(File(projectDir, ".env"))
+            assertEquals("admin", env["DB_USER"], "JSON secret should work normally")
+            assertTrue(env["TLS_CERT"]!!.endsWith("TLS_CERT"), "Multi-line secret should be a file path")
+        }
+    }
+
+    // ─── Required Key Validation ──────────────────────────────────────────────
+
+    @Nested
+    inner class RequiredKeyValidation {
+
+        @Test
+        fun `fails when a required key is missing from the secret response`() {
+            val project = newProject()
+            wireSecret(
+                project, "db",
+                renameKeys = mapOf("username" to "DB_USER", "password" to "DB_PASS"),
+                secretKeys = listOf("DB_USER", "DB_PASS"),
+            )
+            val task = setupTask(project)
+
+            // AWS returns only username, missing password
+            task.commandExecutor = { cmd, _, _ ->
+                if (cmd.contains("get-secret-value")) awsResponse("""{"username": "admin"}""") else ""
+            }
+
+            val ex = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
+                task.createSecretsFile()
+            }
+            assertTrue(ex.message!!.contains("missing required key"), "Should mention missing required key")
+            assertTrue(ex.message!!.contains("DB_PASS"), "Should name the missing key")
+        }
+
+        @Test
+        fun `succeeds when all required keys are present`() {
+            val project = newProject()
+            wireSecret(
+                project, "db",
+                renameKeys = mapOf("username" to "DB_USER", "password" to "DB_PASS"),
+                secretKeys = listOf("DB_USER", "DB_PASS"),
+            )
+            val task = setupTask(project)
+
+            task.commandExecutor = { cmd, _, _ ->
+                if (cmd.contains("get-secret-value")) awsResponse("""{"username": "admin", "password": "s3cret"}""") else ""
+            }
+
+            task.createSecretsFile()
+
+            val env = EnvFileIO.read(File(projectDir, ".env"))
+            assertEquals("admin", env["DB_USER"])
+            assertEquals("s3cret", env["DB_PASS"])
+        }
+
+        @Test
+        fun `no validation when secretKeys is empty`() {
+            val project = newProject()
+            wireSecret(project, "freeform") // no secretKeys filter
+            val task = setupTask(project)
+
+            task.commandExecutor = { cmd, _, _ ->
+                if (cmd.contains("get-secret-value")) awsResponse("""{"anything": "goes"}""") else ""
+            }
+
+            // Should not throw — no required keys to validate
+            task.createSecretsFile()
+
+            val env = EnvFileIO.read(File(projectDir, ".env"))
+            assertEquals("goes", env["anything"])
+        }
+    }
+
+    // ─── Base64 Decode ────────────────────────────────────────────────────────
+
+    @Nested
+    inner class Base64Decode {
+
+        @Test
+        fun `decodes base64 plaintext secret when decode is true`() {
+            val project = newProject()
+            val secret = wireSecret(
+                project, "encoded",
+                plaintext = true,
+                plaintextKey = "DECODED_VALUE",
+            )
+            secret.decode.set(true)
+            val task = setupTask(project)
+
+            // "hello world" in base64
+            val base64Value = java.util.Base64.getEncoder().encodeToString("hello world".toByteArray())
+            task.commandExecutor = { cmd, _, _ ->
+                if (cmd.contains("get-secret-value")) awsResponse(base64Value) else ""
+            }
+
+            task.createSecretsFile()
+
+            val env = EnvFileIO.read(File(projectDir, ".env"))
+            assertEquals("hello world", env["DECODED_VALUE"])
+        }
+
+        @Test
+        fun `does not decode when decode is false (default)`() {
+            val project = newProject()
+            wireSecret(
+                project, "raw",
+                plaintext = true,
+                plaintextKey = "RAW_B64",
+            )
+            // decode defaults to false
+            val task = setupTask(project)
+
+            val base64Value = java.util.Base64.getEncoder().encodeToString("hello world".toByteArray())
+            task.commandExecutor = { cmd, _, _ ->
+                if (cmd.contains("get-secret-value")) awsResponse(base64Value) else ""
+            }
+
+            task.createSecretsFile()
+
+            val env = EnvFileIO.read(File(projectDir, ".env"))
+            assertEquals(base64Value, env["RAW_B64"], "Value should remain base64-encoded")
+        }
+
+        @Test
+        fun `fails with clear error when value is not valid base64 and decode is true`() {
+            val project = newProject()
+            val secret = wireSecret(
+                project, "bad-b64",
+                plaintext = true,
+                plaintextKey = "BAD_VALUE",
+            )
+            secret.decode.set(true)
+            val task = setupTask(project)
+
+            // Not valid base64 (contains spaces and non-base64 chars)
+            task.commandExecutor = { cmd, _, _ ->
+                if (cmd.contains("get-secret-value")) awsResponse("not-valid-base64!!!") else ""
+            }
+
+            val ex = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
+                task.createSecretsFile()
+            }
+            assertTrue(ex.message!!.contains("not valid base64"), "Should mention invalid base64")
+        }
+
+        @Test
+        fun `decode works with multi-line text value and writeToFile`() {
+            val project = newProject()
+            val secret = wireSecret(
+                project, "cert",
+                plaintext = true,
+                plaintextKey = "CERT_DATA",
+            )
+            secret.decode.set(true)
+            secret.writeToFile.set(true)
+            val task = setupTask(project)
+
+            // A multi-line PEM-like value encoded in base64
+            val pemValue = """-----BEGIN CERTIFICATE-----
+MIIC8zCCAdugAwIBAgIU
+abc123def456ghi789
+-----END CERTIFICATE-----"""
+            val base64Value = java.util.Base64.getEncoder().encodeToString(pemValue.toByteArray())
+            task.commandExecutor = { cmd, _, _ ->
+                if (cmd.contains("get-secret-value")) awsResponse(base64Value) else ""
+            }
+
+            task.createSecretsFile()
+
+            // Decoded value is multi-line → writeToFile kicks in → env var gets the file path
+            val env = EnvFileIO.read(File(projectDir, ".env"))
+            val envValue = env["CERT_DATA"] ?: fail("CERT_DATA should be in .env")
+            assertTrue(envValue.endsWith("CERT_DATA"), "Env var should be a file path ending with CERT_DATA, got: $envValue")
+
+            // The secret file should contain the decoded PEM content
+            val secretFile = File(projectDir, ".env-secrets/CERT_DATA")
+            assertTrue(secretFile.exists(), "Secret file should exist")
+            assertEquals(pemValue, secretFile.readText())
+        }
+    }
+
+    // ─── Dry Run ──────────────────────────────────────────────────────────────
+
+    @Nested
+    inner class DryRun {
+
+        @Test
+        fun `dry run does not write any files`() {
+            val project = newProject()
+            wireSecret(project, "db")
+            val task = setupTask(project)
+            task.dryRun.set(true)
+
+            task.commandExecutor = { cmd, _, _ ->
+                if (cmd.contains("get-secret-value")) awsResponse("""{"DB_USER": "admin", "DB_PASS": "s3cret"}""") else ""
+            }
+
+            task.createSecretsFile()
+
+            // No .env file should exist
+            assertFalse(File(projectDir, ".env").exists(), ".env should not be created in dry-run")
+            // No cache file should exist
+            assertFalse(File(projectDir, ".env-dev").exists(), "Cache file should not be created in dry-run")
+        }
+
+        @Test
+        fun `dry run with JSON secret does not write files`() {
+            val project = newProject()
+            wireSecret(
+                project, "json",
+                renameKeys = mapOf("user" to "DB_USER"),
+                secretKeys = listOf("DB_USER"),
+            )
+            val task = setupTask(project)
+            task.dryRun.set(true)
+
+            task.commandExecutor = { cmd, _, _ ->
+                if (cmd.contains("get-secret-value")) awsResponse("""{"user": "admin", "pass": "x"}""") else ""
+            }
+
+            task.createSecretsFile()
+
+            assertFalse(File(projectDir, ".env").exists())
+            assertFalse(File(projectDir, ".env-dev").exists())
+        }
+
+        @Test
+        fun `dry run still validates required keys`() {
+            val project = newProject()
+            wireSecret(
+                project, "db",
+                renameKeys = mapOf("username" to "DB_USER", "password" to "DB_PASS"),
+                secretKeys = listOf("DB_USER", "DB_PASS"),
+            )
+            val task = setupTask(project)
+            task.dryRun.set(true)
+
+            // Missing DB_PASS
+            task.commandExecutor = { cmd, _, _ ->
+                if (cmd.contains("get-secret-value")) awsResponse("""{"username": "admin"}""") else ""
+            }
+
+            val ex = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
+                task.createSecretsFile()
+            }
+            assertTrue(ex.message!!.contains("missing required key"))
+        }
+
+        @Test
+        fun `dry run still decodes base64 (validates the value)`() {
+            val project = newProject()
+            val secret = wireSecret(
+                project, "b64",
+                plaintext = true,
+                plaintextKey = "DECODED",
+            )
+            secret.decode.set(true)
+            val task = setupTask(project)
+            task.dryRun.set(true)
+
+            // Invalid base64 should still fail in dry-run
+            task.commandExecutor = { cmd, _, _ ->
+                if (cmd.contains("get-secret-value")) awsResponse("!!!not-base64!!!") else ""
+            }
+
+            val ex = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
+                task.createSecretsFile()
+            }
+            assertTrue(ex.message!!.contains("not valid base64"))
         }
     }
 

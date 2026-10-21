@@ -29,6 +29,12 @@ env {
             plaintext = true
             plaintextKey = "THIRD_PARTY_API_KEY"
         }
+        create("tlsCert") {
+            secretId = "myapp/\${target}/pem-file"
+            plaintext = true
+            plaintextKey = "TLS_CERT_PATH"
+            writeToFile = true
+        }
     }
 }
 

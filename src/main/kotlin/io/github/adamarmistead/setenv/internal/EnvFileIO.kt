@@ -205,6 +205,26 @@ internal object EnvFileIO {
     }
 
     /**
+     * Writes a multi-line secret value to a protected file in the `.env-secrets/` directory
+     * (sibling to the `.env` file). The file is restricted to `0600` and the directory is
+     * covered by the existing `.env*` gitignore pattern.
+     *
+     * @param envDir the directory containing the `.env` file (typically the project root)
+     * @param key the environment variable name, used as the filename
+     * @param value the raw secret content to write
+     * @return the [File] that was written (caller uses its absolute path for the env var)
+     */
+    fun writeSecretFile(envDir: File, key: String, value: String): File {
+        val secretsDir = File(envDir, ".env-secrets")
+        secretsDir.mkdirs()
+        val file = File(secretsDir, key)
+        file.writeText(value)
+        restrictFilePermissions(file)
+        ensureGitIgnored(envDir)
+        return file
+    }
+
+    /**
      * Ensures `.env*` wildcard pattern exists in `.gitignore`.
      * Creates `.gitignore` with `.env*` if missing, or appends `.env*` if absent.
      */

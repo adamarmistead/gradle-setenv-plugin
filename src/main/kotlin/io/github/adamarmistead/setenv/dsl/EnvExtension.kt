@@ -23,17 +23,25 @@ import org.gradle.api.provider.Property
  * @param secrets the [NamedDomainObjectContainer] of [Secrets] blocks, accessible via the `secrets { }` method
  */
 abstract class EnvExtension(
-    /** The container of all configured [Secrets] blocks. */
+    /**
+     * The container of all configured [Secrets] blocks.
+     */
     val secrets: NamedDomainObjectContainer<Secrets>,
 ) {
 
-    /** Target environment name (e.g. `dev`, `stg`, `prd`). Default: `"dev"`. */
+    /**
+     * Target environment name (e.g. `dev`, `stg`, `prd`). Default: `"dev"`.
+     */
     abstract val target: Property<String>
 
-    /** AWS region — full name (`us-east-1`) or short code (`use1`). Default: `"us-east-1"`. */
+    /**
+     * AWS region — full name (`us-east-1`) or short code (`use1`). Default: `"us-east-1"`.
+     */
     abstract val region: Property<String>
 
-    /** Output `.env` file path. Default: `.env` in the root project directory. */
+    /**
+     * Output `.env` file path. Default: `.env` in the root project directory.
+     */
     abstract val envFile: RegularFileProperty
 
     /**

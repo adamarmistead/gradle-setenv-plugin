@@ -64,4 +64,28 @@ abstract class Secrets @Inject constructor(
     @get:Optional
     abstract val renameKeys: MapProperty<String, String>
 
+    /**
+     * When `true`, multi-line values that are not valid JSON (e.g. PEM certificates)
+     * are written to a file in the `.env-secrets/` directory and the env var is set
+     * to the absolute file path instead of the raw value.
+     *
+     * Multi-line values that ARE valid JSON are always minified inline regardless
+     * of this flag (safe, lossless transform).
+     *
+     * When `false` (default), multi-line non-JSON values cause a build error —
+     * the `.env` format is line-based and cannot represent them inline.
+     */
+    @get:Input
+    @get:Optional
+    abstract val writeToFile: Property<Boolean>
+
+    /**
+     * When `true`, the raw secret value is base64-decoded before being written to the env file.
+     * Useful for secrets stored as base64-encoded binary data in AWS Secrets Manager.
+     * Only applies to plaintext secrets; JSON secrets are unaffected.
+     */
+    @get:Input
+    @get:Optional
+    abstract val decode: Property<Boolean>
+
 }
