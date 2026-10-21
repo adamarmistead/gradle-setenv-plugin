@@ -280,18 +280,48 @@ abstract class CreateSecretsTask @Inject constructor(
         logger.debug("Fetching AWS secret ${secret.name} into cache")
 
         val awsArgs = listOf(
-            "--query SecretString",
             "--profile ${secret.profile.get()}",
             "--region ${propertiesMap[PropertyKeys.REGION]}",
             "--secret-id $targetSecretId",
-            "--output text",
+            "--output json",
         ).joinToString(" ")
 
-        return commandExecutor(
+        val result = commandExecutor(
             "${AwsCli.SECRETS_MANAGER} $awsArgs",
             commandTimeout.get(),
             false,
         )
+
+        if (result.isBlank()) {
+            throw IllegalStateException(
+                "Secret '${secret.name}' returned an empty response. " +
+                    "Check that the secret ID is correct and the secret exists in AWS Secrets Manager.",
+            )
+        }
+
+        val parsed: Any = try {
+            JsonSlurper().parseText(result)
+        } catch (e: Exception) {
+            throw IllegalStateException(
+                "Secret '${secret.name}' response is not valid JSON: ${e.message}. " +
+                    "This may indicate an AWS CLI error or authentication issue.",
+            )
+        }
+
+        if (parsed !is Map<*, *>) {
+            throw IllegalStateException(
+                "Secret '${secret.name}' response is a JSON ${parsed::class.java.simpleName}, not an object. " +
+                    "Expected the standard AWS CLI JSON response format.",
+            )
+        }
+
+        @Suppress("UNCHECKED_CAST")
+        val map = parsed as Map<String, Any?>
+        return map["SecretString"] as? String
+            ?: throw IllegalStateException(
+                "Secret '${secret.name}' response did not contain a SecretString field. " +
+                    "The secret may be stored as binary (ByteArray) instead of text.",
+            )
     }
 
     /**

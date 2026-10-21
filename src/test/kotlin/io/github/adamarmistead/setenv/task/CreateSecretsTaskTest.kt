@@ -21,6 +21,20 @@ class CreateSecretsTaskTest {
 
     // ─── Helpers ───────────────────────────────────────────────────────────────
 
+    /**
+     * Wraps a secret value in the AWS CLI `--output json` response envelope.
+     * The real CLI returns: {"ARN":"...","Name":"...","SecretString":"<value>"}
+     */
+    private fun awsResponse(secretString: String): String {
+        val escaped = secretString
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+        return """{"ARN":"arn:aws:secretsmanager:us-east-1:123456789012:secret:test","Name":"test","SecretString":"$escaped"}"""
+    }
+
     private fun newProject(): org.gradle.api.Project {
         val project = ProjectBuilder.builder().withProjectDir(projectDir).build()
         project.plugins.apply("io.github.adamarmistead.setenv")
@@ -129,7 +143,7 @@ class CreateSecretsTaskTest {
             task.commandExecutor = { cmd, _, _ ->
                 executed.add(cmd)
                 if (cmd.contains("get-secret-value")) {
-                    """{"username": "admin", "password": "s3cret", "unused": "x"}"""
+                    awsResponse("""{"username": "admin", "password": "s3cret", "unused": "x"}""")
                 } else ""
             }
 
@@ -152,7 +166,7 @@ class CreateSecretsTaskTest {
 
             task.commandExecutor = { cmd, _, _ ->
                 if (cmd.contains("get-secret-value")) {
-                    """{"host": "db.example.com", "port": "5432", "user": "root"}"""
+                    awsResponse("""{"host": "db.example.com", "port": "5432", "user": "root"}""")
                 } else ""
             }
 
@@ -182,7 +196,7 @@ class CreateSecretsTaskTest {
 
             task.commandExecutor = { cmd, _, _ ->
                 if (cmd.contains("get-secret-value")) {
-                    "ghp_abc123xyz"
+                    awsResponse("ghp_abc123xyz")
                 } else ""
             }
 
@@ -204,7 +218,7 @@ class CreateSecretsTaskTest {
 
             task.commandExecutor = { cmd, _, _ ->
                 if (cmd.contains("get-secret-value")) {
-                    "raw-value-123"
+                    awsResponse("raw-value-123")
                 } else ""
             }
 
@@ -236,8 +250,8 @@ class CreateSecretsTaskTest {
 
             task.commandExecutor = { cmd, _, _ ->
                 when {
-                    cmd.contains("myapp/dev/db") -> """{"username": "dbadmin", "password": "p1"}"""
-                    cmd.contains("myapp/dev/api-keys") -> """{"api_key": "sk-123", "api_secret": "sec-456"}"""
+                    cmd.contains("myapp/dev/db") -> awsResponse("""{"username": "dbadmin", "password": "p1"}""")
+                    cmd.contains("myapp/dev/api-keys") -> awsResponse("""{"api_key": "sk-123", "api_secret": "sec-456"}""")
                     else -> ""
                 }
             }
@@ -259,8 +273,8 @@ class CreateSecretsTaskTest {
 
             task.commandExecutor = { cmd, _, _ ->
                 when {
-                    cmd.contains("myapp/dev/a") -> """{"key_a": "val_a"}"""
-                    cmd.contains("myapp/dev/b") -> """{"key_b": "val_b"}"""
+                    cmd.contains("myapp/dev/a") -> awsResponse("""{"key_a": "val_a"}""")
+                    cmd.contains("myapp/dev/b") -> awsResponse("""{"key_b": "val_b"}""")
                     else -> ""
                 }
             }
@@ -291,7 +305,7 @@ class CreateSecretsTaskTest {
             val task = setupTask(project)
 
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) """{"DB_USER": "admin", "DB_PASS": "s3cret"}""" else ""
+                if (cmd.contains("get-secret-value")) awsResponse("""{"DB_USER": "admin", "DB_PASS": "s3cret"}""") else ""
             }
 
             task.createSecretsFile()
@@ -309,13 +323,13 @@ class CreateSecretsTaskTest {
 
             // First run: AWS returns key A
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) """{"KEY_A": "a1"}""" else ""
+                if (cmd.contains("get-secret-value")) awsResponse("""{"KEY_A": "a1"}""") else ""
             }
             task.createSecretsFile()
 
             // Second run: AWS now returns different content (key B replaces key A)
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) """{"KEY_B": "b1"}""" else ""
+                if (cmd.contains("get-secret-value")) awsResponse("""{"KEY_B": "b1"}""") else ""
             }
             task.createSecretsFile()
 
@@ -336,7 +350,7 @@ class CreateSecretsTaskTest {
             EnvFileIO.write(envFile, mapOf("MANUAL_KEY" to "manual-value"))
 
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) """{"FROM_AWS": "recovered"}""" else ""
+                if (cmd.contains("get-secret-value")) awsResponse("""{"FROM_AWS": "recovered"}""") else ""
             }
 
             task.createSecretsFile()
@@ -388,7 +402,7 @@ class CreateSecretsTaskTest {
 
             // Simulate AWS response
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) """{"TOKEN": "abc123"}""" else ""
+                if (cmd.contains("get-secret-value")) awsResponse("""{"TOKEN": "abc123"}""") else ""
             }
 
             task.createSecretsFile()
@@ -452,7 +466,7 @@ class CreateSecretsTaskTest {
             // plaintextKey was never set — this is the misconfiguration we're testing
 
             val task = setupTask(project)
-            task.commandExecutor = { _, _, _ -> "some-raw-value" }
+            task.commandExecutor = { _, _, _ -> awsResponse("some-raw-value") }
 
             val ex = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
                 task.createSecretsFile()
@@ -468,7 +482,7 @@ class CreateSecretsTaskTest {
             val task = setupTask(project)
 
             // Simulate AWS returning a plain string (not JSON)
-            task.commandExecutor = { _, _, _ -> "my-plain-password-123" }
+            task.commandExecutor = { _, _, _ -> awsResponse("my-plain-password-123") }
 
             val ex = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
                 task.createSecretsFile()
@@ -501,7 +515,7 @@ class CreateSecretsTaskTest {
             val task = setupTask(project)
 
             // Simulate AWS returning a JSON array (not object)
-            task.commandExecutor = { _, _, _ -> """["item1", "item2"]""" }
+            task.commandExecutor = { _, _, _ -> awsResponse("""["item1", "item2"]""") }
 
             val ex = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
                 task.createSecretsFile()
@@ -528,7 +542,7 @@ class CreateSecretsTaskTest {
 
             task.commandExecutor = { cmd, _, _ ->
                 if (cmd.contains("get-secret-value")) {
-                    """{"old_name": "renamed-value", "KEEP_ME": "kept", "DROP_ME": "dropped"}"""
+                    awsResponse("""{"old_name": "renamed-value", "KEEP_ME": "kept", "DROP_ME": "dropped"}""")
                 } else ""
             }
 
@@ -553,7 +567,7 @@ class CreateSecretsTaskTest {
 
             task.commandExecutor = { cmd, _, _ ->
                 if (cmd.contains("get-secret-value")) {
-                    """{"aws_key": "AKIA123", "OTHER_KEY": "val", "IGNORED": "x"}"""
+                    awsResponse("""{"aws_key": "AKIA123", "OTHER_KEY": "val", "IGNORED": "x"}""")
                 } else ""
             }
 
@@ -588,7 +602,7 @@ abc123def456ghi789
 -----END CERTIFICATE-----"""
 
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) pemValue else ""
+                if (cmd.contains("get-secret-value")) awsResponse(pemValue) else ""
             }
 
             task.createSecretsFile()
@@ -617,7 +631,7 @@ abc123def456ghi789
 
             val multiLineValue = "line1\nline2\nline3"
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) multiLineValue else ""
+                if (cmd.contains("get-secret-value")) awsResponse(multiLineValue) else ""
             }
 
             val ex = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
@@ -642,7 +656,7 @@ abc123def456ghi789
             val task = setupTask(project)
 
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) "ghp_single_line_token" else ""
+                if (cmd.contains("get-secret-value")) awsResponse("ghp_single_line_token") else ""
             }
 
             task.createSecretsFile()
@@ -667,7 +681,7 @@ abc123def456ghi789
 
             val multiLine = "part1\npart2"
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) multiLine else ""
+                if (cmd.contains("get-secret-value")) awsResponse(multiLine) else ""
             }
 
             task.createSecretsFile()
@@ -693,8 +707,8 @@ abc123def456ghi789
 
             task.commandExecutor = { cmd, _, _ ->
                 when {
-                    cmd.contains("myapp/dev/db") -> """{"DB_USER": "admin"}"""
-                    cmd.contains("myapp/dev/cert") -> "cert-line1\ncert-line2"
+                    cmd.contains("myapp/dev/db") -> awsResponse("""{"DB_USER": "admin"}""")
+                    cmd.contains("myapp/dev/cert") -> awsResponse("cert-line1\ncert-line2")
                     else -> ""
                 }
             }
@@ -724,7 +738,7 @@ abc123def456ghi789
 
             // AWS returns only username, missing password
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) """{"username": "admin"}""" else ""
+                if (cmd.contains("get-secret-value")) awsResponse("""{"username": "admin"}""") else ""
             }
 
             val ex = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
@@ -745,7 +759,7 @@ abc123def456ghi789
             val task = setupTask(project)
 
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) """{"username": "admin", "password": "s3cret"}""" else ""
+                if (cmd.contains("get-secret-value")) awsResponse("""{"username": "admin", "password": "s3cret"}""") else ""
             }
 
             task.createSecretsFile()
@@ -762,7 +776,7 @@ abc123def456ghi789
             val task = setupTask(project)
 
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) """{"anything": "goes"}""" else ""
+                if (cmd.contains("get-secret-value")) awsResponse("""{"anything": "goes"}""") else ""
             }
 
             // Should not throw — no required keys to validate
@@ -792,7 +806,7 @@ abc123def456ghi789
             // "hello world" in base64
             val base64Value = java.util.Base64.getEncoder().encodeToString("hello world".toByteArray())
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) base64Value else ""
+                if (cmd.contains("get-secret-value")) awsResponse(base64Value) else ""
             }
 
             task.createSecretsFile()
@@ -814,7 +828,7 @@ abc123def456ghi789
 
             val base64Value = java.util.Base64.getEncoder().encodeToString("hello world".toByteArray())
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) base64Value else ""
+                if (cmd.contains("get-secret-value")) awsResponse(base64Value) else ""
             }
 
             task.createSecretsFile()
@@ -836,7 +850,7 @@ abc123def456ghi789
 
             // Not valid base64 (contains spaces and non-base64 chars)
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) "not-valid-base64!!!" else ""
+                if (cmd.contains("get-secret-value")) awsResponse("not-valid-base64!!!") else ""
             }
 
             val ex = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
@@ -864,7 +878,7 @@ abc123def456ghi789
 -----END CERTIFICATE-----"""
             val base64Value = java.util.Base64.getEncoder().encodeToString(pemValue.toByteArray())
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) base64Value else ""
+                if (cmd.contains("get-secret-value")) awsResponse(base64Value) else ""
             }
 
             task.createSecretsFile()
@@ -894,7 +908,7 @@ abc123def456ghi789
             task.dryRun.set(true)
 
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) """{"DB_USER": "admin", "DB_PASS": "s3cret"}""" else ""
+                if (cmd.contains("get-secret-value")) awsResponse("""{"DB_USER": "admin", "DB_PASS": "s3cret"}""") else ""
             }
 
             task.createSecretsFile()
@@ -917,7 +931,7 @@ abc123def456ghi789
             task.dryRun.set(true)
 
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) """{"user": "admin", "pass": "x"}""" else ""
+                if (cmd.contains("get-secret-value")) awsResponse("""{"user": "admin", "pass": "x"}""") else ""
             }
 
             task.createSecretsFile()
@@ -939,7 +953,7 @@ abc123def456ghi789
 
             // Missing DB_PASS
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) """{"username": "admin"}""" else ""
+                if (cmd.contains("get-secret-value")) awsResponse("""{"username": "admin"}""") else ""
             }
 
             val ex = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
@@ -962,7 +976,7 @@ abc123def456ghi789
 
             // Invalid base64 should still fail in dry-run
             task.commandExecutor = { cmd, _, _ ->
-                if (cmd.contains("get-secret-value")) "!!!not-base64!!!" else ""
+                if (cmd.contains("get-secret-value")) awsResponse("!!!not-base64!!!") else ""
             }
 
             val ex = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
