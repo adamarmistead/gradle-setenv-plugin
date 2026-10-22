@@ -1,15 +1,21 @@
 package io.github.adamarmistead.setenv.internal
 
 import java.io.File
+import java.io.OutputStream
 import java.nio.file.FileSystems
 import java.nio.file.Files
+import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.AclEntry
 import java.nio.file.attribute.AclEntryPermission
 import java.nio.file.attribute.AclEntryType
 import java.nio.file.attribute.AclFileAttributeView
 import java.nio.file.attribute.PosixFilePermission
+import java.nio.file.attribute.PosixFilePermissions
 
 internal object EnvFileIO {
+
+    private val isPosix: Boolean =
+        FileSystems.getDefault().supportedFileAttributeViews().contains("posix")
 
     /**
      * Reads a .env file into a [LinkedHashMap], preserving insertion order.
@@ -36,16 +42,20 @@ internal object EnvFileIO {
     /**
      * Writes [properties] to [file], sorted alphabetically, one KEY=value per line.
      * Used for cache files (.env-dev, etc.) that are fully managed by the plugin.
+     *
+     * The file is created (or truncated) with owner-only permissions **before** any
+     * content is written, eliminating any window where secret data is world-readable.
      */
     fun write(file: File, properties: Map<String, String>) {
         file.parentFile?.mkdirs()
-        file.bufferedWriter().use { writer ->
+
+        val path = file.toPath()
+        openSecureOutputStream(path).use { out ->
             properties.toSortedMap().forEach { (key, value) ->
-                writer.write("$key=$value")
-                writer.newLine()
+                out.write("$key=$value\n".toByteArray())
             }
         }
-        restrictFilePermissions(file)
+
         file.parentFile?.let { ensureGitIgnored(it) }
     }
 
@@ -69,7 +79,7 @@ internal object EnvFileIO {
     }
 
     /**
-     * Merges an in-memory `properties` map into `target`, preserving existing content.
+     * Merges an in-memory `properties` map into [target], preserving existing content.
      *
      * Semantics are identical to [mergeInto] but accept a map directly instead of
      * reading from source files. Used by CreateEnvTask to update static variables
@@ -86,9 +96,6 @@ internal object EnvFileIO {
             write(target, properties)
             return
         }
-
-        // Ensure target is writable (a previous write may have restricted permissions)
-        target.setWritable(true)
 
         val rawLines = target.readLines().toMutableList()
         val handled = mutableSetOf<String>()
@@ -118,41 +125,133 @@ internal object EnvFileIO {
             newKeys.forEach { key -> updatedLines.add("$key=${properties.getValue(key)}") }
         }
 
-        target.bufferedWriter().use { writer ->
+        openSecureOutputStream(target.toPath()).use { out ->
             updatedLines.forEach { line ->
-                writer.write(line)
-                writer.newLine()
+                out.write("$line\n".toByteArray())
             }
         }
 
-        restrictFilePermissions(target)
         target.parentFile?.let { ensureGitIgnored(it) }
     }
 
     /**
-     * Restricts file permissions to owner read/write only.
-     * Prevents other local users on shared machines from reading sensitive environment or cache files.
+     * Writes a multi-line secret value to a protected file in the `.env-secrets/` directory
+     * (sibling to the `.env` file). The file is created with `0600` permissions before any
+     * content is written, and the directory is restricted to `0700`.
      *
-     * - **POSIX:** sets `rw-------` (`0600`) via the Posix file attribute view.
-     * - **Windows (NTFS):** rewrites the ACL to a single ALLOW entry for the current user
-     *   with read/write data access, using the NIO [AclFileAttributeView].
-     *
-     * Best-effort: any failure is swallowed so permission hardening never breaks the build.
+     * @param envDir the directory containing the `.env` file (typically the project root)
+     * @param key the environment variable name, used as the filename
+     * @param value the raw secret content to write
+     * @return the [File] that was written (caller uses its absolute path for the env var)
+     * @throws IllegalArgumentException if [key] contains path separators or traversal sequences
      */
-    fun restrictFilePermissions(file: File) {
+    fun writeSecretFile(envDir: File, key: String, value: String): File {
+        // Validate key to prevent path traversal (e.g. "../../evil" or "a/b")
+        require(!key.contains('/') && !key.contains('\\') && !key.contains("..")) {
+            "Secret key '$key' contains invalid characters. " +
+                "Keys must be a single identifier with no path separators or '..'."
+        }
+
+        val secretsDir = File(envDir, ".env-secrets")
+        if (!secretsDir.exists()) {
+            envDir.mkdirs()
+            if (isPosix) {
+                val dirPerms = setOf(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.OWNER_EXECUTE,
+                )
+                Files.createDirectory(secretsDir.toPath(), PosixFilePermissions.asFileAttribute(dirPerms))
+            } else {
+                secretsDir.mkdirs()
+                restrictDirPermissions(secretsDir)
+            }
+        } else {
+            // Already exists (previous run) — ensure it's still restricted.
+            restrictDirPermissions(secretsDir)
+        }
+
+        val file = File(secretsDir, key)
+        openSecureOutputStream(file.toPath()).use { out ->
+            out.write(value.toByteArray())
+        }
+
+        ensureGitIgnored(envDir)
+        return file
+    }
+
+    /**
+     * Restricts a directory's permissions to owner-only (0700 on POSIX).
+     * Prevents other local users from listing the directory contents (secret filenames).
+     */
+    private fun restrictDirPermissions(dir: File) {
         try {
-            val path = file.toPath()
-            if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+            val path = dir.toPath()
+            if (isPosix) {
                 val permissions = setOf(
                     PosixFilePermission.OWNER_READ,
                     PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.OWNER_EXECUTE,  // needed to traverse/list
                 )
                 Files.setPosixFilePermissions(path, permissions)
             } else {
                 restrictWindowsAcl(path)
             }
-        } catch (_: Exception) {
-            // Permission restriction is best-effort; don't fail the build if unsupported.
+        } catch (e: Exception) {
+            System.err.println(
+                "[gradle-setenv] WARNING: Could not restrict directory permissions on ${dir.absolutePath}: ${e.message}.",
+            )
+        }
+    }
+
+    /**
+     * Opens a [java.io.OutputStream] for writing to [path], ensuring the file has
+     * owner-only permissions **before** any content is written.
+     *
+     * Strategy:
+     * - **New POSIX files:** created with `0600` via the creation attribute — zero window.
+     * - **Existing POSIX files:** restricted to `0600` before truncate+write (best-effort).
+     * - **Windows:** file is created/truncated, then ACL restricted before write (best-effort).
+     *
+     * At no point does the file contain sensitive content with incorrect permissions.
+     * Permission failures are best-effort (logged, not fatal) to avoid breaking builds
+     * on filesystems that don't support POSIX/NTFS permission models.
+     */
+    private fun openSecureOutputStream(path: java.nio.file.Path): OutputStream {
+        if (isPosix) {
+            val perms = setOf(
+                PosixFilePermission.OWNER_READ,
+                PosixFilePermission.OWNER_WRITE,
+            )
+            if (!Files.exists(path)) {
+                // Create with restrictive permissions from birth — zero window.
+                Files.createFile(path, PosixFilePermissions.asFileAttribute(perms))
+            } else {
+                // Existing file: ensure restricted before we truncate and write new content.
+                try {
+                    Files.setPosixFilePermissions(path, perms)
+                } catch (e: Exception) {
+                    System.err.println(
+                        "[gradle-setenv] WARNING: Could not restrict permissions on ${path}: ${e.message}.",
+                    )
+                }
+            }
+            return Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)
+        } else {
+            val stream = Files.newOutputStream(
+                path,
+                StandardOpenOption.WRITE,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING,
+            )
+            try {
+                restrictWindowsAcl(path)
+            } catch (e: Exception) {
+                System.err.println(
+                    "[gradle-setenv] WARNING: Could not restrict ACL on ${path}: ${e.message}.",
+                )
+            }
+            return stream
         }
     }
 
@@ -202,26 +301,6 @@ internal object EnvFileIO {
 
         // Replace the entire ACL with just our owner entry — removes all other users/groups.
         aclView.setAcl(listOf(ownerEntry))
-    }
-
-    /**
-     * Writes a multi-line secret value to a protected file in the `.env-secrets/` directory
-     * (sibling to the `.env` file). The file is restricted to `0600` and the directory is
-     * covered by the existing `.env*` gitignore pattern.
-     *
-     * @param envDir the directory containing the `.env` file (typically the project root)
-     * @param key the environment variable name, used as the filename
-     * @param value the raw secret content to write
-     * @return the [File] that was written (caller uses its absolute path for the env var)
-     */
-    fun writeSecretFile(envDir: File, key: String, value: String): File {
-        val secretsDir = File(envDir, ".env-secrets")
-        secretsDir.mkdirs()
-        val file = File(secretsDir, key)
-        file.writeText(value)
-        restrictFilePermissions(file)
-        ensureGitIgnored(envDir)
-        return file
     }
 
     /**
