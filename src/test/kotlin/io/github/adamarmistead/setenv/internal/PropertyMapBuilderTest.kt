@@ -52,8 +52,7 @@ class PropertyMapBuilderTest {
             assertEquals("my-region-1", custom["region"])
             assertEquals("myr1", custom["regionShort"])
 
-            // ...and a built-in region still resolves (the regression: previously the
-            // custom map REPLACED the built-ins, so use1 would throw "Unknown target region").
+            // ...and a built-in region still resolves alongside the custom one.
             val builtin = PropertyMapBuilder.build(project, "dev", "use1")
             assertEquals("us-east-1", builtin["region"])
             assertEquals("use1", builtin["regionShort"])

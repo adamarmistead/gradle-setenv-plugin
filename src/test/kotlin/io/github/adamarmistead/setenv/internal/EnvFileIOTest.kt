@@ -2,6 +2,7 @@ package io.github.adamarmistead.setenv.internal
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
@@ -186,6 +187,202 @@ class EnvFileIOTest {
 
             // Content should be identical — no reordering, no additions
             assertEquals(listOf("A=1", "B=2", "C=3"), target.readLines())
+        }
+
+        @Test
+        fun `merges into a permission-restricted file`() {
+            val target = File(tempDir, "restricted.env")
+            EnvFileIO.write(target, mapOf("EXISTING" to "original", "KEEP" to "me"))
+
+            EnvFileIO.mergeProperties(target, mapOf("EXISTING" to "updated", "NEW_KEY" to "added"))
+
+            val properties = EnvFileIO.read(target)
+            assertEquals("updated", properties["EXISTING"])
+            assertEquals("me", properties["KEEP"])
+            assertEquals("added", properties["NEW_KEY"])
+        }
+
+        @Test
+        fun `mergeProperties maintains owner-only permissions on posix`() {
+            if (!java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) return
+
+            val target = File(tempDir, "merge-perms.env")
+            EnvFileIO.write(target, mapOf("A" to "1"))
+
+            // Simulate a second run: merge new values into the existing file
+            EnvFileIO.mergeProperties(target, mapOf("A" to "2", "B" to "3"))
+
+            val perms = java.nio.file.Files.getPosixFilePermissions(target.toPath())
+            assertTrue(perms.contains(java.nio.file.attribute.PosixFilePermission.OWNER_READ))
+            assertTrue(perms.contains(java.nio.file.attribute.PosixFilePermission.OWNER_WRITE))
+            assertFalse(perms.contains(java.nio.file.attribute.PosixFilePermission.GROUP_READ))
+            assertFalse(perms.contains(java.nio.file.attribute.PosixFilePermission.OTHERS_READ))
+        }
+
+        @Test
+        fun `mergeProperties fixes permissions on a user-created 0644 file on posix`() {
+            if (!java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) return
+
+            val target = File(tempDir, "user-created.env")
+            // Simulate a user manually creating .env with default umask (0644)
+            target.writeText("EXISTING=old\n")
+            java.nio.file.Files.setPosixFilePermissions(
+                target.toPath(),
+                setOf(
+                    java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                    java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
+                    java.nio.file.attribute.PosixFilePermission.GROUP_READ,
+                    java.nio.file.attribute.PosixFilePermission.OTHERS_READ,
+                ),
+            )
+
+            // Plugin merges into it — should end up 0600
+            EnvFileIO.mergeProperties(target, mapOf("EXISTING" to "new", "SECRET" to "value"))
+
+            val perms = java.nio.file.Files.getPosixFilePermissions(target.toPath())
+            assertTrue(perms.contains(java.nio.file.attribute.PosixFilePermission.OWNER_READ))
+            assertTrue(perms.contains(java.nio.file.attribute.PosixFilePermission.OWNER_WRITE))
+            assertFalse(perms.contains(java.nio.file.attribute.PosixFilePermission.GROUP_READ))
+            assertFalse(perms.contains(java.nio.file.attribute.PosixFilePermission.OTHERS_READ))
+
+            // Content is correct
+            assertEquals("new", EnvFileIO.read(target)["EXISTING"])
+            assertEquals("value", EnvFileIO.read(target)["SECRET"])
+        }
+    }
+
+    @Nested
+    inner class WriteSecretFile {
+
+        @Test
+        fun `writes multi-line secret to env-secrets directory`() {
+            val pem = "-----BEGIN CERT-----\nMIIB...\n-----END CERT-----"
+            val file = EnvFileIO.writeSecretFile(tempDir, "TLS_CERT", pem)
+
+            assertTrue(file.exists())
+            assertEquals(pem, file.readText())
+            assertEquals(File(tempDir, ".env-secrets/TLS_CERT"), file)
+        }
+
+        @Test
+        fun `rejects path traversal in key`() {
+            assertThrows(IllegalArgumentException::class.java) {
+                EnvFileIO.writeSecretFile(tempDir, "../../evil", "secret")
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                EnvFileIO.writeSecretFile(tempDir, "a/b", "secret")
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                EnvFileIO.writeSecretFile(tempDir, "a\\b", "secret")
+            }
+        }
+
+        @Test
+        fun `rejects parent-dir reference in key`() {
+            assertThrows(IllegalArgumentException::class.java) {
+                EnvFileIO.writeSecretFile(tempDir, "..", "secret")
+            }
+        }
+
+        @Test
+        fun `creates env-secrets directory with restricted permissions on posix`() {
+            // Only meaningful on POSIX systems; skip gracefully on Windows.
+            if (!java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+                return
+            }
+
+            EnvFileIO.writeSecretFile(tempDir, "MY_SECRET", "value")
+
+            val secretsDir = File(tempDir, ".env-secrets").toPath()
+            val perms = java.nio.file.Files.getPosixFilePermissions(secretsDir)
+            // Should be 0700: owner rwx, no group/other access
+            assertTrue(perms.contains(java.nio.file.attribute.PosixFilePermission.OWNER_READ))
+            assertTrue(perms.contains(java.nio.file.attribute.PosixFilePermission.OWNER_WRITE))
+            assertTrue(perms.contains(java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE))
+            assertFalse(perms.contains(java.nio.file.attribute.PosixFilePermission.GROUP_READ))
+            assertFalse(perms.contains(java.nio.file.attribute.PosixFilePermission.OTHERS_READ))
+        }
+
+        @Test
+        fun `secret file has owner-only permissions on posix`() {
+            if (!java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+                return
+            }
+
+            val file = EnvFileIO.writeSecretFile(tempDir, "MY_SECRET", "value")
+            val perms = java.nio.file.Files.getPosixFilePermissions(file.toPath())
+            assertTrue(perms.contains(java.nio.file.attribute.PosixFilePermission.OWNER_READ))
+            assertTrue(perms.contains(java.nio.file.attribute.PosixFilePermission.OWNER_WRITE))
+            assertFalse(perms.contains(java.nio.file.attribute.PosixFilePermission.GROUP_READ))
+            assertFalse(perms.contains(java.nio.file.attribute.PosixFilePermission.OTHERS_READ))
+        }
+    }
+
+    @Nested
+    inner class WritePermissions {
+
+        @Test
+        fun `write creates file with owner-only permissions on posix`() {
+            if (!java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+                return
+            }
+
+            val file = File(tempDir, "cache.env")
+            EnvFileIO.write(file, mapOf("KEY" to "value"))
+
+            val perms = java.nio.file.Files.getPosixFilePermissions(file.toPath())
+            assertTrue(perms.contains(java.nio.file.attribute.PosixFilePermission.OWNER_READ))
+            assertTrue(perms.contains(java.nio.file.attribute.PosixFilePermission.OWNER_WRITE))
+            assertFalse(perms.contains(java.nio.file.attribute.PosixFilePermission.GROUP_READ))
+            assertFalse(perms.contains(java.nio.file.attribute.PosixFilePermission.OTHERS_READ))
+        }
+
+        @Test
+        fun `write overwrites existing file and maintains owner-only permissions on posix`() {
+            if (!java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+                return
+            }
+
+            val file = File(tempDir, "cache2.env")
+            EnvFileIO.write(file, mapOf("A" to "1"))
+            EnvFileIO.write(file, mapOf("A" to "2", "B" to "3"))
+
+            val perms = java.nio.file.Files.getPosixFilePermissions(file.toPath())
+            assertTrue(perms.contains(java.nio.file.attribute.PosixFilePermission.OWNER_READ))
+            assertTrue(perms.contains(java.nio.file.attribute.PosixFilePermission.OWNER_WRITE))
+            assertFalse(perms.contains(java.nio.file.attribute.PosixFilePermission.GROUP_READ))
+            assertFalse(perms.contains(java.nio.file.attribute.PosixFilePermission.OTHERS_READ))
+
+            assertEquals(mapOf("A" to "2", "B" to "3"), EnvFileIO.read(file))
+        }
+
+        @Test
+        fun `write fixes permissions on a pre-existing 0644 file on posix`() {
+            if (!java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) return
+
+            val file = File(tempDir, "preexisting.env")
+            // Simulate a file created by another tool with default umask (0644)
+            file.writeText("OLD=stale\n")
+            java.nio.file.Files.setPosixFilePermissions(
+                file.toPath(),
+                setOf(
+                    java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                    java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
+                    java.nio.file.attribute.PosixFilePermission.GROUP_READ,
+                    java.nio.file.attribute.PosixFilePermission.OTHERS_READ,
+                ),
+            )
+
+            // Plugin overwrites it — should end up 0600 with new content
+            EnvFileIO.write(file, mapOf("FRESH" to "value"))
+
+            val perms = java.nio.file.Files.getPosixFilePermissions(file.toPath())
+            assertTrue(perms.contains(java.nio.file.attribute.PosixFilePermission.OWNER_READ))
+            assertTrue(perms.contains(java.nio.file.attribute.PosixFilePermission.OWNER_WRITE))
+            assertFalse(perms.contains(java.nio.file.attribute.PosixFilePermission.GROUP_READ))
+            assertFalse(perms.contains(java.nio.file.attribute.PosixFilePermission.OTHERS_READ))
+
+            assertEquals(mapOf("FRESH" to "value"), EnvFileIO.read(file))
         }
     }
 
