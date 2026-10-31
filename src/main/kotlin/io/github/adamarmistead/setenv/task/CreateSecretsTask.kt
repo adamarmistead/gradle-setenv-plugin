@@ -130,7 +130,7 @@ abstract class CreateSecretsTask @Inject constructor(
      * - returns the combined stdout/stderr output of the command
      */
     @get:Internal
-    var commandExecutor: (command: String, timeoutSeconds: Int, writeOutput: Boolean) -> String =
+    internal var commandExecutor: (command: String, timeoutSeconds: Int, writeOutput: Boolean) -> String =
         { cmd, timeout, write -> CommandExecutor.execute(cmd, timeout, write) }
 
     /**
@@ -159,6 +159,9 @@ abstract class CreateSecretsTask @Inject constructor(
 
         val combined = linkedMapOf<String, String>()
         val authenticatedProfiles = mutableSetOf<String>()
+        // Deferred protected-file writes for multi-line writeToFile secrets: (secretName, key, value).
+        // Executed only after the dry-run gate so dry-run never writes to disk.
+        val pendingSecretFileWrites = mutableListOf<Triple<String, String, String>>()
         secrets.forEach { secret ->
             if (secret.region.isPresent) {
                 logger.info(
@@ -204,13 +207,14 @@ abstract class CreateSecretsTask @Inject constructor(
                 }
 
                 if (value.contains('\n') && secret.writeToFile.get()) {
-                    // Multi-line non-JSON value (e.g. PEM cert) → write to protected file,
-                    // env var gets the absolute path.
-                    val secretFile = EnvFileIO.writeSecretFile(envFile.parentFile, key, value)
-                    logger.lifecycle(
-                        "Wrote multi-line secret '${secret.name}' to ${secretFile.absolutePath}",
-                    )
-                    mapOf(key to secretFile.absolutePath)
+                    // Multi-line non-JSON value (e.g. PEM cert) → stored in a protected
+                    // file; env var gets the absolute path. The actual write is deferred
+                    // until after the dry-run gate so dry-run never touches disk.
+                    // Forward slashes so the path survives java.util.Properties parsing
+                    // (Spring's [.properties] import treats backslash as escape char).
+                    val secretFilePath = envFile.parentFile.resolve(".env-secrets").resolve(key).absolutePath.replace('\\', '/')
+                    pendingSecretFileWrites.add(Triple(secret.name, key, value))
+                    mapOf(key to secretFilePath)
                 } else {
                     if (value.contains('\n')) {
                         throw IllegalStateException(
@@ -252,6 +256,12 @@ abstract class CreateSecretsTask @Inject constructor(
             logger.lifecycle("[DRY RUN] Would write ${combined.size} secret(s):")
             combined.forEach { (key, _) -> logger.lifecycle("  $key=***") }
             return
+        }
+
+        // Execute deferred protected-file writes (only reached in non-dry-run mode)
+        pendingSecretFileWrites.forEach { (secretName, key, value) ->
+            val secretFile = EnvFileIO.writeSecretFile(envFile.parentFile, key, value)
+            logger.lifecycle("Wrote multi-line secret '$secretName' to ${secretFile.absolutePath}")
         }
 
         // Write the complete snapshot to the cache file (replaces previous content)

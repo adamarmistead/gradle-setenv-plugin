@@ -108,7 +108,7 @@ env {
 | `plaintext`    | Treat value as plain text, not JSON                                                     | `false`                                             |
 | `plaintextKey` | ENV key name when `plaintext = true`                                                    | *required if plaintext*                             |
 | `writeToFile`  | Write multi-line plaintext to a protected file; env var gets the path                   | `false`                                             |
-| `secretsFile`  | Cache file for this environment's fetched values                                        | `.env-<target>` in root project (shared)            |
+| `decode`       | Base64-decode the fetched value before writing to `.env`                                | `false`                                             |
 
 ### Task properties (`createSecrets`)
 
@@ -197,31 +197,36 @@ The plugin applies several safeguards to keep secrets out of version control and
 └──────────────────────────────────┬──────────────────────────────────┘
                                    │
                     ┌──────────────▼──────────────┐
-                    │       createEnv task         │
-                    │  • Resolves placeholders     │
-                    │  • Merges into .env (0600)   │
-                    │  • Ensures .gitignore entry  │
+                    │     Gradle up-to-date check  │
+                    │  • If inputs unchanged &     │
+                    │    --refresh not set:        │
+                    │    → task skipped, .env      │
+                    │      already correct         │
+                    │  • Otherwise: proceed        │
                     └──────────────┬──────────────┘
                                    │
                     ┌──────────────▼──────────────┐
                     │     createSecrets task       │
-                    │  1. Check shared cache file  │
-                    │     (.env-<target>)          │
-                    │  2. If exists & !refresh:    │
-                    │     → merge into .env, done  │
-                    │  3. Otherwise, for each      │
-                    │     secrets block:           │
+                    │  1. For each secrets block:  │
                     │     a. STS identity check    │
                     │     b. Login if needed       │
                     │     c. Fetch from AWS        │
                     │     d. Parse JSON/plaintext  │
                     │     e. Rename + filter keys  │
-                    │  4. Write all → cache file   │
-                    │  5. Merge cache → .env       │
+                    │  2. Write all → cache file   │
+                    │     (.env-<target>)          │
+                    │  3. Merge cache → .env       │
+                    └──────────────┬──────────────┘
+                                   │
+                    ┌──────────────▼──────────────┐
+                    │       createEnv task         │
+                    │  • Resolves placeholders     │
+                    │  • Merges into .env (0600)   │
+                    │  • Ensures .gitignore entry  │
                     └─────────────────────────────┘
 ```
 
-**Caching:** All secrets for a given environment share a single cache file (`.env-<target>`). On subsequent runs, if the cache exists and `--refresh` is not set, the AWS CLI is never invoked — all values are served from the local cache. This makes local development fast and works offline.
+**Caching:** All secrets for a given environment share a single cache file (`.env-<target>`). Gradle's up-to-date mechanism skips the entire `createSecrets` task when inputs haven't changed — the AWS CLI is never invoked on subsequent runs unless you pass `--refresh`. This makes local development fast and works offline.
 
 **Merge strategy:** The final `.env` is updated in-place — existing comments, blank lines, and manually added keys are preserved. Only values supplied by the plugin are overwritten or appended.
 
