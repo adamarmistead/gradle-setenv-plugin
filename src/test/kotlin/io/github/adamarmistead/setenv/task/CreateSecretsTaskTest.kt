@@ -619,6 +619,49 @@ abc123def456ghi789
         }
 
         @Test
+        fun `writeToFile path is Properties safe (no backslashes)`() {
+            // Regression guard for the Windows path-escaping bug: Spring's
+            // `spring.config.import: optional:file:.env` loads .env via
+            // java.util.Properties, where backslash is the escape character.
+            // An absolute Windows path (D:\...\MY_CERT) would collapse to
+            // D:...\MY_CERT. We therefore emit forward slashes, which both
+            // Windows APIs and java.util.Properties accept.
+            val project = newProject()
+            val secret = wireSecret(
+                project, "cert",
+                plaintext = true,
+                plaintextKey = "TLS_CERT_PATH",
+            )
+            secret.writeToFile.set(true)
+            val task = setupTask(project)
+
+            val pemValue = """-----BEGIN CERTIFICATE-----
+MIIC8zCCAdugAwIBAgIU
+-----END CERTIFICATE-----"""
+            task.commandExecutor = { cmd, _, _ ->
+                if (cmd.contains("get-secret-value")) awsResponse(pemValue) else ""
+            }
+
+            task.createSecretsFile()
+
+            val env = EnvFileIO.read(File(projectDir, ".env"))
+            val envValue = env["TLS_CERT_PATH"] ?: fail("TLS_CERT_PATH should be in .env")
+
+            // 1) No raw backslashes — the direct defect on Windows.
+            assertFalse(
+                envValue.contains('\\'),
+                "writeToFile path must not contain backslashes (breaks java.util.Properties parsing), got: $envValue",
+            )
+
+            // 2) It must round-trip through java.util.Properties unchanged —
+            //    this is exactly how Spring Boot's [.properties] import reads it.
+            val roundTripped = java.util.Properties().apply {
+                load(java.io.StringReader("TLS_CERT_PATH=$envValue"))
+            }["TLS_CERT_PATH"]
+            assertEquals(envValue, roundTripped, "Path must survive java.util.Properties.load() unchanged")
+        }
+
+        @Test
         fun `multi-line plaintext without writeToFile fails with clear error`() {
             val project = newProject()
             wireSecret(
@@ -983,6 +1026,48 @@ abc123def456ghi789
                 task.createSecretsFile()
             }
             assertTrue(ex.message!!.contains("not valid base64"))
+        }
+
+        @Test
+        fun `dry run with multi-line writeToFile secret writes no secret file`() {
+            val project = newProject()
+            val secret = wireSecret(
+                project, "cert",
+                plaintext = true,
+                plaintextKey = "TLS_CERT",
+            )
+            secret.writeToFile.set(true)
+            val task = setupTask(project)
+            task.dryRun.set(true)
+
+            val pemValue = """-----BEGIN CERTIFICATE-----
+MIIC8zCCAdugAwIBAgIU
+abc123def456ghi789
+-----END CERTIFICATE-----"""
+            task.commandExecutor = { cmd, _, _ ->
+                if (cmd.contains("get-secret-value")) awsResponse(pemValue) else ""
+            }
+
+            task.createSecretsFile()
+
+            // Regression guard: the dry-run branch must NOT call
+            // EnvFileIO.writeSecretFile (which would create .env-secrets/TLS_CERT).
+            assertFalse(
+                File(projectDir, ".env").exists(),
+                ".env should not be created in dry-run",
+            )
+            assertFalse(
+                File(projectDir, ".env-dev").exists(),
+                "Cache file should not be created in dry-run",
+            )
+            assertFalse(
+                File(projectDir, ".env-secrets/TLS_CERT").exists(),
+                "Protected secret file must not be written in dry-run",
+            )
+            assertFalse(
+                File(projectDir, ".env-secrets").exists(),
+                ".env-secrets directory must not be created in dry-run",
+            )
         }
     }
 

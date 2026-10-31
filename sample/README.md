@@ -46,3 +46,4 @@ SERVER_PORT=8080
 | `--target=stg` | Override the target environment |
 | `--region=usw2` | Override the region (full name or short code) |
 | `--refresh` | Force re-fetch of secrets from AWS |
+| `--dryRun` | Preview changes without writing any files to disk |
